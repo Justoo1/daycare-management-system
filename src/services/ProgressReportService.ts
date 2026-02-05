@@ -75,13 +75,36 @@ export class ProgressReportService {
     // Get assessments from the period
     const assessmentService = getAssessmentService();
     const allAssessments = await assessmentService.getAssessmentsByChild(tenantId, childId);
-    const assessmentsSummary = allAssessments
-      .filter((a) => a.assessmentDate >= data.startDate && a.assessmentDate <= data.endDate)
-      .map((a) => ({
-        id: a.id,
-        type: a.assessmentType,
-        score: a.overallScore || 0,
-      }));
+    const periodAssessments = allAssessments.filter(
+      (a) => a.assessmentDate >= data.startDate && a.assessmentDate <= data.endDate
+    );
+    const assessmentsSummary = periodAssessments.map((a) => ({
+      id: a.id,
+      type: a.assessmentType,
+      score: a.overallScore || 0,
+    }));
+
+    // Calculate ratings from assessments if not provided
+    // Convert assessment scores (0-100) to ratings (1-5)
+    const scoreToRating = (score: number): number => Math.min(5, Math.max(1, Math.round(score / 20)));
+
+    // Get behavioral assessment score for behavior rating
+    const behavioralAssessment = periodAssessments.find(a => a.assessmentType === 'behavioral');
+    const calculatedBehaviorRating = behavioralAssessment?.overallScore
+      ? scoreToRating(behavioralAssessment.overallScore)
+      : null;
+
+    // Get developmental assessment score for social skills rating
+    const developmentalAssessment = periodAssessments.find(a => a.assessmentType === 'developmental');
+    const calculatedSocialSkillsRating = developmentalAssessment?.overallScore
+      ? scoreToRating(developmentalAssessment.overallScore)
+      : null;
+
+    // Get academic assessment score for academic rating
+    const academicAssessment = periodAssessments.find(a => a.assessmentType === 'academic');
+    const calculatedAcademicRating = academicAssessment?.overallScore
+      ? scoreToRating(academicAssessment.overallScore)
+      : null;
 
     const report = this.progressReportRepository.create({
       tenantId,
@@ -94,9 +117,9 @@ export class ProgressReportService {
       attendanceRate,
       totalDaysPresent,
       totalDaysAbsent,
-      behaviorRating: data.behaviorRating || 3,
-      socialSkillsRating: data.socialSkillsRating || 3,
-      academicProgressRating: data.academicProgressRating || 3,
+      behaviorRating: data.behaviorRating ?? calculatedBehaviorRating ?? null,
+      socialSkillsRating: data.socialSkillsRating ?? calculatedSocialSkillsRating ?? null,
+      academicProgressRating: data.academicProgressRating ?? calculatedAcademicRating ?? null,
       academicProgress: data.academicProgress,
       socialEmotionalDevelopment: data.socialEmotionalDevelopment,
       physicalDevelopment: data.physicalDevelopment,

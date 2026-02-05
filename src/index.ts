@@ -31,6 +31,8 @@ import { GuardianController } from './controllers/GuardianController';
 import { invoiceController } from './controllers/invoice.controller';
 import { paymentController } from './controllers/payment.controller';
 import { subscriptionController } from './controllers/subscription.controller';
+import { mediaController } from './controllers/media.controller';
+import { tenantPaymentController } from './controllers/tenant-payment.controller';
 import * as authSchemas from './schemas/auth.schema';
 import * as analyticsSchemas from './schemas/analytics.schema';
 import * as reportSchemas from './schemas/report.schema';
@@ -50,7 +52,7 @@ const fastify = Fastify({
 
 /**
  * Authentication middleware for protected routes
- * Extracts authenticated user context from JWT token
+ * Extracts authenticated user context from JWT token and fetches permissions
  */
 async function authenticateRoute(request: any, reply: any) {
   try {
@@ -59,13 +61,62 @@ async function authenticateRoute(request: any, reply: any) {
     // Extract request context from JWT payload
     // This includes tenant info, user info, and staff's assigned classId
     const jwtPayload = request.user;
+
+    // Import getEffectivePermissions to calculate user's permissions
+    const { getEffectivePermissions } = await import('./middleware/rbac');
+
+    // Start with basic context
+    let classId = jwtPayload.classId;
+    let permissions: string[] = [];
+
+    // For staff roles, fetch their profile to get custom permissions
+    const staffRoles = ['teacher', 'staff', 'director'];
+    if (staffRoles.includes(jwtPayload.role)) {
+      try {
+        const { StaffProfile } = await import('./models/StaffProfile');
+        const { AppDataSource } = await import('./config/database');
+        const staffRepo = AppDataSource.getRepository(StaffProfile);
+
+        const staffProfile = await staffRepo.findOne({
+          where: { userId: jwtPayload.userId, isActive: true },
+          select: ['classId', 'permissions', 'useCustomPermissions'],
+        });
+
+        console.log('[Auth Debug] Staff profile lookup:', {
+          userId: jwtPayload.userId,
+          role: jwtPayload.role,
+          found: !!staffProfile,
+          staffClassId: staffProfile?.classId,
+          jwtClassId: jwtPayload.classId,
+        });
+
+        if (staffProfile) {
+          classId = staffProfile.classId || classId;
+          permissions = getEffectivePermissions(
+            jwtPayload.role,
+            staffProfile.permissions,
+            staffProfile.useCustomPermissions
+          );
+        } else {
+          permissions = getEffectivePermissions(jwtPayload.role, null, false);
+        }
+      } catch (err) {
+        // If staff profile fetch fails, use default role permissions
+        permissions = getEffectivePermissions(jwtPayload.role, null, false);
+      }
+    } else {
+      // For non-staff roles (super_admin, center_owner, parent), use default permissions
+      permissions = getEffectivePermissions(jwtPayload.role, null, false);
+    }
+
     request.tenant = {
       tenantId: jwtPayload.tenantId,
       userId: jwtPayload.userId,
       centerId: jwtPayload.centerId,
-      classId: jwtPayload.classId, // Staff member's assigned class (undefined for non-staff)
+      classId, // Staff member's assigned class (undefined for non-staff)
       role: jwtPayload.role,
       email: jwtPayload.email,
+      permissions, // User's effective permissions
     };
   } catch (error) {
     reply.status(401).send({ success: false, error: 'Unauthorized' });
@@ -232,6 +283,7 @@ async function registerRoutes() {
   fastify.get('/api/children/enrollment-stats', { onRequest: [authenticateRoute] }, ChildController.getEnrollmentStats);
   fastify.post('/api/children/bulk-approve', { onRequest: [authenticateRoute] }, ChildController.bulkApproveApplications);
   fastify.post('/api/children/bulk-enroll', { onRequest: [authenticateRoute] }, ChildController.bulkEnrollChildren);
+  fastify.put('/api/children/bulk-active-status', { onRequest: [authenticateRoute] }, ChildController.bulkSetActiveStatus);
   fastify.get('/api/children/:id', { onRequest: [authenticateRoute], schema: childSchemas.getChildSchema }, ChildController.getChild);
   fastify.put('/api/children/:id', { onRequest: [authenticateRoute] }, ChildController.updateChild);
   fastify.delete('/api/children/:id', { onRequest: [authenticateRoute] }, ChildController.deleteChild);
@@ -264,9 +316,16 @@ async function registerRoutes() {
   fastify.post('/api/children/:childId/approve', { onRequest: [authenticateRoute] }, ChildController.approveApplication);
   fastify.post('/api/children/:childId/reject', { onRequest: [authenticateRoute] }, ChildController.rejectApplication);
   fastify.post('/api/children/:childId/promote', { onRequest: [authenticateRoute] }, ChildController.promoteFromWaitlist);
+  fastify.put('/api/children/:childId/active-status', { onRequest: [authenticateRoute] }, ChildController.setActiveStatus);
 
   // QR Code route for children
   fastify.post('/api/children/:childId/generate-qr', { onRequest: [authenticateRoute] }, ChildController.generateQRCode);
+
+  // Child Promotion and History routes
+  fastify.post('/api/children/:childId/promote-to-class', { onRequest: [authenticateRoute, requireManagerRole] }, ChildController.promoteToClass);
+  fastify.get('/api/children/:childId/eligible-classes', { onRequest: [authenticateRoute] }, ChildController.getEligibleClasses);
+  fastify.get('/api/children/:childId/class-history', { onRequest: [authenticateRoute] }, ChildController.getClassHistory);
+  fastify.get('/api/children/:childId/full-history', { onRequest: [authenticateRoute] }, ChildController.getFullHistory);
 
   // Attendance routes (protected - require tenant header)
   // Staff-only routes for recording attendance
@@ -286,6 +345,14 @@ async function registerRoutes() {
   fastify.get('/api/attendance/classes/:classId', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.getClassAttendance);
   fastify.get('/api/attendance/centers/:centerId', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.getCenterAttendance);
 
+  // Secure checkout with OTP verification (staff only)
+  fastify.post('/api/attendance/secure-checkout/initiate', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.initiateSecureCheckout);
+  fastify.post('/api/attendance/secure-checkout/qr/initiate', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.initiateSecureCheckoutByQR);
+  fastify.post('/api/attendance/secure-checkout/verify', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.verifySecureCheckout);
+  fastify.post('/api/attendance/secure-checkout/:pendingCheckoutId/resend', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.resendCheckoutOTP);
+  fastify.post('/api/attendance/secure-checkout/:pendingCheckoutId/cancel', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.cancelPendingCheckout);
+  fastify.get('/api/attendance/secure-checkout/:pendingCheckoutId', { onRequest: [authenticateRoute, requireStaffRole] }, AttendanceController.getPendingCheckout);
+
   // Activity Log routes (protected - require tenant header)
   // Staff-only routes for logging activities
   fastify.post('/api/activities/meal', { onRequest: [authenticateRoute, requireStaffRole], schema: activitySchemas.logMealSchema }, ActivityLogController.logMeal);
@@ -300,10 +367,16 @@ async function registerRoutes() {
   fastify.get('/api/activities/children/:childId/daily', { onRequest: [authenticateRoute, validateParentChildAccess], schema: activitySchemas.getDailyActivitiesSchema }, ActivityLogController.getDailyActivities);
   fastify.get('/api/activities/children/:childId/history', { onRequest: [authenticateRoute, validateParentChildAccess] }, ActivityLogController.getActivityHistory);
   fastify.get('/api/activities/children/:childId/daily-report', { onRequest: [authenticateRoute, validateParentChildAccess], schema: activitySchemas.getDailyReportSchema }, ActivityLogController.getDailyReport);
+  fastify.get('/api/activities/children/:childId/enhanced-daily-summary', { onRequest: [authenticateRoute, validateParentChildAccess] }, ActivityLogController.getEnhancedDailySummary);
+  fastify.get('/api/activities/children/:childId/weekly-summary', { onRequest: [authenticateRoute, validateParentChildAccess] }, ActivityLogController.getWeeklySummary);
   fastify.get('/api/activities/children/:childId/photos', { onRequest: [authenticateRoute, validateParentChildAccess] }, ActivityLogController.getPhotoGallery);
 
   // Staff-only routes for updating activities
   fastify.patch('/api/activities/:id/mood', { onRequest: [authenticateRoute, requireStaffRole] }, ActivityLogController.updateMood);
+
+  // Teacher class dashboard routes (staff only)
+  fastify.get('/api/activities/classes/:classId/dashboard', { onRequest: [authenticateRoute, requireStaffRole] }, ActivityLogController.getTeacherClassDashboard);
+  fastify.get('/api/activities/classes/:classId/summary', { onRequest: [authenticateRoute, requireStaffRole] }, ActivityLogController.getClassActivitySummary);
 
   // Notification routes (protected - require tenant header)
   fastify.post('/api/notifications/test-sms', { onRequest: [authenticateRoute], schema: notificationSchemas.sendTestSMSSchema }, NotificationController.sendTestSMS);
@@ -315,13 +388,14 @@ async function registerRoutes() {
   fastify.post('/api/notifications/emergency-broadcast', { onRequest: [authenticateRoute] }, NotificationController.sendEmergencyBroadcast);
   fastify.get('/api/notifications/balance', { onRequest: [authenticateRoute], schema: notificationSchemas.checkBalanceSchema }, NotificationController.checkBalance);
 
-  // File Upload routes (protected - require tenant header)
+  // File Upload routes (using ImageKit - protected, require tenant header)
   fastify.post('/api/uploads/photo', { onRequest: [authenticateRoute], schema: notificationSchemas.uploadPhotoSchema }, FileUploadController.uploadPhoto);
   fastify.post('/api/uploads/photos', { onRequest: [authenticateRoute] }, FileUploadController.uploadPhotos);
   fastify.post('/api/uploads/document', { onRequest: [authenticateRoute] }, FileUploadController.uploadDocument);
   fastify.post('/api/uploads/video', { onRequest: [authenticateRoute] }, FileUploadController.uploadVideo);
   fastify.post('/api/uploads/voice-note', { onRequest: [authenticateRoute] }, FileUploadController.uploadVoiceNote);
   fastify.delete('/api/uploads/file', { onRequest: [authenticateRoute] }, FileUploadController.deleteFile);
+  fastify.post('/api/uploads/auth', { onRequest: [authenticateRoute] }, FileUploadController.getAuthParameters);
   fastify.post('/api/uploads/presigned-url', { onRequest: [authenticateRoute], schema: notificationSchemas.getPresignedUrlSchema }, FileUploadController.getPresignedUrl);
 
   // Center Management routes (protected - require tenant header)
@@ -384,6 +458,9 @@ async function registerRoutes() {
   fastify.get('/api/staff/employee/:employeeId', { onRequest: [authenticateRoute] }, StaffController.getStaffByEmployeeId);
   fastify.get('/api/staff/user/:userId', { onRequest: [authenticateRoute] }, StaffController.getStaffByUserId);
   fastify.get('/api/staff/centers/:centerId', { onRequest: [authenticateRoute] }, StaffController.getStaffByCenter);
+  // Staff Permission routes (must be before :id routes to avoid conflicts)
+  fastify.get('/api/staff/permissions/available', { onRequest: [authenticateRoute] }, StaffController.getAvailablePermissions);
+  fastify.get('/api/staff/permissions/defaults/:role', { onRequest: [authenticateRoute] }, StaffController.getDefaultPermissionsForRole);
   fastify.get('/api/staff/:id', { onRequest: [authenticateRoute] }, StaffController.getStaffById);
   fastify.put('/api/staff/:id', { onRequest: [authenticateRoute] }, StaffController.updateStaffProfile);
   fastify.post('/api/staff/:id/terminate', { onRequest: [authenticateRoute] }, StaffController.terminateStaff);
@@ -393,6 +470,11 @@ async function registerRoutes() {
   fastify.post('/api/staff/:id/generate-qr', { onRequest: [authenticateRoute] }, StaffController.generateQRCode);
   fastify.post('/api/staff/:id/update-salary', { onRequest: [authenticateRoute] }, StaffController.updateSalary);
   fastify.delete('/api/staff/:id', { onRequest: [authenticateRoute] }, StaffController.deleteStaff);
+
+  // Staff Permission Management routes (protected - admin only)
+  fastify.get('/api/staff/:id/permissions', { onRequest: [authenticateRoute] }, StaffController.getStaffPermissions);
+  fastify.put('/api/staff/:id/permissions', { onRequest: [authenticateRoute] }, StaffController.updateStaffPermissions);
+  fastify.post('/api/staff/:id/permissions/reset', { onRequest: [authenticateRoute] }, StaffController.resetStaffPermissions);
 
   // Staff Management - Certification routes (protected - require tenant header)
   fastify.post('/api/certifications', { onRequest: [authenticateRoute], schema: staffSchemas.createCertificationSchema }, CertificationController.createCertification);
@@ -500,6 +582,14 @@ async function registerRoutes() {
   fastify.post('/api/payments/:id/refund', { onRequest: [authenticateRoute, requireManagerRole] }, paymentController.refundPayment.bind(paymentController));
   fastify.delete('/api/payments/:id', { onRequest: [authenticateRoute, requireManagerRole] }, paymentController.deletePayment.bind(paymentController));
 
+  // Tenant Payment Settings routes (for schools to receive payments)
+  fastify.get('/api/tenant-payment/banks', { onRequest: [authenticateRoute, requireManagerRole] }, tenantPaymentController.getSupportedBanks.bind(tenantPaymentController));
+  fastify.post('/api/tenant-payment/verify-account', { onRequest: [authenticateRoute, requireManagerRole] }, tenantPaymentController.verifyBankAccount.bind(tenantPaymentController));
+  fastify.post('/api/tenant-payment/setup', { onRequest: [authenticateRoute, requireManagerRole] }, tenantPaymentController.setupPaymentSettings.bind(tenantPaymentController));
+  fastify.get('/api/tenant-payment/settings', { onRequest: [authenticateRoute, requireManagerRole] }, tenantPaymentController.getPaymentSettings.bind(tenantPaymentController));
+  fastify.put('/api/tenant-payment/settings', { onRequest: [authenticateRoute, requireManagerRole] }, tenantPaymentController.updatePaymentSettings.bind(tenantPaymentController));
+  fastify.get('/api/tenant-payment/platform-status', { onRequest: [authenticateRoute] }, tenantPaymentController.getPlatformPaymentStatus.bind(tenantPaymentController));
+
   // Subscription Management routes (protected - require tenant header)
   // Public route for viewing plans
   fastify.get('/api/subscriptions/plans', subscriptionController.getPlans.bind(subscriptionController));
@@ -518,6 +608,30 @@ async function registerRoutes() {
 
   // Debug endpoint to check all subscriptions
   fastify.get('/api/subscriptions/debug', { onRequest: [authenticateRoute, requireManagerRole] }, subscriptionController.debugSubscriptions.bind(subscriptionController));
+
+  // Media Management routes (ImageKit integration)
+  // Authentication for client-side uploads
+  fastify.get('/api/media/auth', { onRequest: [authenticateRoute] }, mediaController.getAuthParams.bind(mediaController));
+  fastify.get('/api/media/config', { onRequest: [authenticateRoute] }, mediaController.getConfig.bind(mediaController));
+
+  // Server-side upload routes
+  fastify.post('/api/media/upload', { onRequest: [authenticateRoute] }, mediaController.uploadFile.bind(mediaController));
+  fastify.post('/api/media/upload-multiple', { onRequest: [authenticateRoute] }, mediaController.uploadMultipleFiles.bind(mediaController));
+
+  // File management routes
+  fastify.get('/api/media/list', { onRequest: [authenticateRoute] }, mediaController.listFiles.bind(mediaController));
+  fastify.post('/api/media/url', { onRequest: [authenticateRoute] }, mediaController.getOptimizedUrl.bind(mediaController));
+  fastify.get('/api/media/:fileId', { onRequest: [authenticateRoute] }, mediaController.getFileDetails.bind(mediaController));
+  fastify.delete('/api/media/:fileId', { onRequest: [authenticateRoute, requireManagerRole] }, mediaController.deleteFile.bind(mediaController));
+  fastify.post('/api/media/delete-multiple', { onRequest: [authenticateRoute, requireManagerRole] }, mediaController.deleteMultipleFiles.bind(mediaController));
+
+  // Specialized upload routes
+  fastify.post('/api/media/child/:childId/photo', { onRequest: [authenticateRoute, requireStaffRole] }, mediaController.uploadChildPhoto.bind(mediaController));
+  fastify.post('/api/media/staff/:staffId/photo', { onRequest: [authenticateRoute, requireManagerRole] }, mediaController.uploadStaffPhoto.bind(mediaController));
+  fastify.post('/api/media/activity/:activityId', { onRequest: [authenticateRoute, requireStaffRole] }, mediaController.uploadActivityMedia.bind(mediaController));
+
+  // Admin routes
+  fastify.post('/api/media/initialize-folders', { onRequest: [authenticateRoute, requireManagerRole] }, mediaController.initializeFolders.bind(mediaController));
 
   // Error handling
   fastify.setErrorHandler(async (error: any, request, reply) => {

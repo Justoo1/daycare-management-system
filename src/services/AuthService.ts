@@ -159,7 +159,7 @@ export class AuthService {
   async loginWithoutTenant(
     emailOrPhone: string,
     password: string
-  ): Promise<{ user: User; token: string; tenant: { id: string; name: string } }> {
+  ): Promise<{ user: User; token: string; tenant: { id: string; name: string; slug: string } }> {
     let user: User | null = null;
 
     // Try email first
@@ -237,6 +237,7 @@ export class AuthService {
       tenant: {
         id: tenant?.id || user.tenantId,
         name: tenant?.name || 'Unknown',
+        slug: tenant?.slug || '',
       },
     };
   }
@@ -407,8 +408,6 @@ export class AuthService {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
-
-    console.log('🔍 AuthService - User object before return:', JSON.stringify(userResponse, null, 2));
 
     return {
       user: userResponse,

@@ -24,8 +24,8 @@ export class MilestoneController {
         photoUrls,
       } = request.body as any;
 
-      if (!childId || !category || !title || !description || ageExpected === undefined) {
-        return sendBadRequest(reply, 'Missing required fields: childId, category, title, description, ageExpected');
+      if (!childId || !category || !title || ageExpected === undefined) {
+        return sendBadRequest(reply, 'Missing required fields: childId, category, title, ageExpected');
       }
 
       const milestone = await milestoneService.createMilestone(

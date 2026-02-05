@@ -7,6 +7,10 @@ export class AnalyticsController {
   /**
    * Get attendance trends
    * GET /api/analytics/attendance/trends
+   *
+   * Staff with VIEW_CLASS_CHILDREN permission (but not VIEW_ALL_CHILDREN)
+   * will see stats filtered to their assigned class only.
+   * Accepts optional classId query parameter for explicit filtering.
    */
   static async getAttendanceTrends(request: FastifyRequest, reply: FastifyReply) {
     try {
@@ -20,11 +24,18 @@ export class AnalyticsController {
 
       const groupBy = (query.groupBy || 'day') as 'day' | 'week' | 'month';
 
+      // Determine class filter:
+      // 1. Use explicit classId from query if provided
+      // 2. Otherwise, managers see all, teachers see their assigned class
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      const filterClassId = query.classId || (!isManager ? tenant.classId : undefined);
+
       const trends = await analyticsService.getAttendanceTrends(
         tenant.tenantId,
         new Date(query.startDate),
         new Date(query.endDate),
-        groupBy
+        groupBy,
+        filterClassId
       );
 
       return sendSuccess(reply, { trends });
@@ -157,13 +168,25 @@ export class AnalyticsController {
   /**
    * Get dashboard summary
    * GET /api/analytics/dashboard
+   *
+   * Staff with VIEW_CLASS_CHILDREN permission (but not VIEW_ALL_CHILDREN)
+   * will see stats filtered to their assigned class only.
    */
   static async getDashboardSummary(request: FastifyRequest, reply: FastifyReply) {
     try {
       const tenant = (request as any).tenant as TenantContext;
       const analyticsService = getAnalyticsService();
 
-      const summary = await analyticsService.getDashboardSummary(tenant.tenantId);
+      // Determine if user should see class-filtered stats
+      // Managers (super_admin, center_owner, director) see all stats
+      // Staff/teachers with assigned class see only their class stats
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+
+      // For non-managers: filter by their assigned class
+      // If they don't have an assigned class, they'll see empty stats
+      const filterClassId = !isManager ? tenant.classId : undefined;
+
+      const summary = await analyticsService.getDashboardSummary(tenant.tenantId, filterClassId);
 
       return sendSuccess(reply, { summary });
     } catch (error: any) {

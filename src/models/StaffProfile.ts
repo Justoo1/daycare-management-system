@@ -7,8 +7,9 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  JoinColumn,
 } from 'typeorm';
-import { StaffPosition, EmploymentType, SalaryFrequency } from '@shared';
+import { StaffPosition, EmploymentType, SalaryFrequency, StaffPermission } from '@shared';
 import { User } from './User';
 import { Center } from './Center';
 import { Class } from './Class';
@@ -81,6 +82,14 @@ export class StaffProfile {
   @Column('boolean', { default: true })
   isActive: boolean;
 
+  // Granular permissions for this staff member (overrides default role permissions)
+  @Column('simple-json', { nullable: true })
+  permissions: StaffPermission[] | null;
+
+  // If true, use custom permissions instead of default role permissions
+  @Column('boolean', { default: false })
+  useCustomPermissions: boolean;
+
   @Column('date', { nullable: true })
   terminationDate?: Date;
 
@@ -89,12 +98,15 @@ export class StaffProfile {
 
   // Relationships
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'userId' })
   user: User;
 
   @ManyToOne(() => Center, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'centerId' })
   center: Center;
 
   @ManyToOne(() => Class, { nullable: true })
+  @JoinColumn({ name: 'classId' })
   class: Class;
 
   @OneToMany(() => Certification, cert => cert.staff)

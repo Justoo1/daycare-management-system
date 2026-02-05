@@ -16,17 +16,19 @@ export const checkInSchema = {
     },
   },
   response: {
-    200: {
+    201: {
       description: 'Child checked in successfully',
       type: 'object',
       properties: {
         success: { type: 'boolean' },
         message: { type: 'string' },
+        timestamp: { type: 'string' },
         data: {
           type: 'object',
           properties: {
-            attendance: { type: 'object' },
+            attendance: { type: 'object', additionalProperties: true },
           },
+          additionalProperties: true,
         },
       },
     },
@@ -57,6 +59,14 @@ export const checkOutSchema = {
       properties: {
         success: { type: 'boolean' },
         message: { type: 'string' },
+        timestamp: { type: 'string' },
+        data: {
+          type: 'object',
+          properties: {
+            attendance: { type: 'object', additionalProperties: true },
+          },
+          additionalProperties: true,
+        },
       },
     },
   },
@@ -114,10 +124,16 @@ export const getAttendanceHistorySchema = {
       properties: {
         success: { type: 'boolean' },
         data: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+        },
+        pagination: {
           type: 'object',
           properties: {
-            attendance: { type: 'array', items: { type: 'object', additionalProperties: true } },
-            count: { type: 'integer' },
+            page: { type: 'integer' },
+            limit: { type: 'integer' },
+            total: { type: 'integer' },
+            totalPages: { type: 'integer' },
           },
         },
       },

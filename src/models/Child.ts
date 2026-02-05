@@ -7,6 +7,7 @@ import {
   CreateDateColumn,
   UpdateDateColumn,
   Index,
+  JoinColumn,
 } from 'typeorm';
 import { EnrollmentStatus } from '@shared';
 import { Center } from './Center';
@@ -14,6 +15,7 @@ import { Class } from './Class';
 import { Guardian } from './Guardian';
 import { Attendance } from './Attendance';
 import { ActivityLog } from './ActivityLog';
+import { ClassHistory } from './ClassHistory';
 
 @Entity('children')
 @Index(['tenantId', 'centerId'])
@@ -128,14 +130,16 @@ export class Child {
   @Column('text', { nullable: true })
   medicalFormUrl: string;
 
-  @Column('boolean', { default: false })
+  @Column('boolean', { default: true })
   isActive: boolean;
 
   // Relationships
   @ManyToOne(() => Center, center => center.children, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'centerId' })
   center: Center;
 
   @ManyToOne(() => Class, classRoom => classRoom.children, { nullable: true })
+  @JoinColumn({ name: 'classId' })
   class: Class;
 
   @OneToMany(() => Guardian, guardian => guardian.child)
@@ -146,6 +150,9 @@ export class Child {
 
   @OneToMany(() => ActivityLog, activityLog => activityLog.child)
   activityLogs: ActivityLog[];
+
+  @OneToMany(() => ClassHistory, classHistory => classHistory.child)
+  classHistory: ClassHistory[];
 
   @CreateDateColumn()
   createdAt: Date;

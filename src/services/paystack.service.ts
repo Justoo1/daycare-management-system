@@ -266,6 +266,149 @@ export class PaystackService {
       );
     }
   }
+
+  // ==================== SUBACCOUNT METHODS ====================
+
+  /**
+   * Create a subaccount for a business/school to receive payments
+   */
+  async createSubaccount(data: {
+    business_name: string;
+    bank_code: string;
+    account_number: string;
+    percentage_charge: number; // Platform fee percentage
+    description?: string;
+    primary_contact_email?: string;
+    primary_contact_name?: string;
+    primary_contact_phone?: string;
+    metadata?: Record<string, any>;
+  }) {
+    try {
+      const response = await this.client.post('/subaccount', {
+        business_name: data.business_name,
+        bank_code: data.bank_code,
+        account_number: data.account_number,
+        percentage_charge: data.percentage_charge,
+        description: data.description,
+        primary_contact_email: data.primary_contact_email,
+        primary_contact_name: data.primary_contact_name,
+        primary_contact_phone: data.primary_contact_phone,
+        metadata: data.metadata || {},
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error('Paystack create subaccount error:', error.response?.data || error.message);
+      throw new Error(
+        error.response?.data?.message || 'Failed to create subaccount'
+      );
+    }
+  }
+
+  /**
+   * Get a subaccount by code
+   */
+  async getSubaccount(subaccountCode: string) {
+    try {
+      const response = await this.client.get(`/subaccount/${subaccountCode}`);
+      return response.data;
+    } catch (error: any) {
+      console.error('Paystack get subaccount error:', error.response?.data || error.message);
+      throw new Error(
+        error.response?.data?.message || 'Failed to get subaccount'
+      );
+    }
+  }
+
+  /**
+   * Update a subaccount
+   */
+  async updateSubaccount(subaccountCode: string, data: {
+    business_name?: string;
+    bank_code?: string;
+    account_number?: string;
+    percentage_charge?: number;
+    description?: string;
+    primary_contact_email?: string;
+    primary_contact_name?: string;
+    primary_contact_phone?: string;
+  }) {
+    try {
+      const response = await this.client.put(`/subaccount/${subaccountCode}`, data);
+      return response.data;
+    } catch (error: any) {
+      console.error('Paystack update subaccount error:', error.response?.data || error.message);
+      throw new Error(
+        error.response?.data?.message || 'Failed to update subaccount'
+      );
+    }
+  }
+
+  /**
+   * List all subaccounts
+   */
+  async listSubaccounts(params?: { perPage?: number; page?: number }) {
+    try {
+      const response = await this.client.get('/subaccount', { params });
+      return response.data;
+    } catch (error: any) {
+      console.error('Paystack list subaccounts error:', error.response?.data || error.message);
+      throw new Error(
+        error.response?.data?.message || 'Failed to list subaccounts'
+      );
+    }
+  }
+
+  /**
+   * Resolve account number - verify bank account details
+   */
+  async resolveAccountNumber(accountNumber: string, bankCode: string) {
+    try {
+      const response = await this.client.get('/bank/resolve', {
+        params: {
+          account_number: accountNumber,
+          bank_code: bankCode,
+        },
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('Paystack resolve account error:', error.response?.data || error.message);
+      throw new Error(
+        error.response?.data?.message || 'Failed to resolve account number'
+      );
+    }
+  }
+
+  /**
+   * Initialize payment with split (subaccount)
+   */
+  async initializePaymentWithSplit(data: PaystackInitializePaymentData & {
+    subaccount: string; // Subaccount code
+    bearer?: 'subaccount' | 'account'; // Who bears the Paystack charges
+    transaction_charge?: number; // Flat fee to charge (in kobo)
+  }) {
+    try {
+      const response = await this.client.post('/transaction/initialize', {
+        email: data.email,
+        amount: Math.round(data.amount),
+        reference: data.reference || this.generateReference(),
+        currency: data.currency || 'GHS',
+        metadata: data.metadata || {},
+        channels: data.channels || ['card', 'mobile_money', 'bank'],
+        callback_url: data.callback_url,
+        subaccount: data.subaccount,
+        bearer: data.bearer || 'account', // Platform bears the charges by default
+        transaction_charge: data.transaction_charge,
+      });
+
+      return response.data;
+    } catch (error: any) {
+      console.error('Paystack initialize split payment error:', error.response?.data || error.message);
+      throw new Error(
+        error.response?.data?.message || 'Failed to initialize payment'
+      );
+    }
+  }
 }
 
 // Export singleton instance

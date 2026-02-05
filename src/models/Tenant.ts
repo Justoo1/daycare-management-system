@@ -60,6 +60,29 @@ export class Tenant {
   @Column('timestamp', { nullable: true })
   subscriptionExpiresAt: Date;
 
+  // Payment Settings - Bank Details for receiving payments
+  @Column('varchar', { nullable: true })
+  bankName: string;
+
+  @Column('varchar', { nullable: true })
+  bankCode: string; // Paystack bank code
+
+  @Column('varchar', { nullable: true })
+  accountNumber: string;
+
+  @Column('varchar', { nullable: true })
+  accountName: string;
+
+  // Paystack Subaccount
+  @Column('varchar', { nullable: true })
+  paystackSubaccountCode: string;
+
+  @Column('decimal', { precision: 5, scale: 2, default: 0 })
+  platformFeePercentage: number; // Platform fee percentage (e.g., 2.5 for 2.5%)
+
+  @Column('boolean', { default: false })
+  paymentSettingsVerified: boolean;
+
   @Column('boolean', { default: true })
   isActive: boolean;
 

@@ -1,6 +1,7 @@
 import { AppDataSource } from '../config/database';
 import { Payment } from '../models/Payment';
 import { Invoice } from '../models/Invoice';
+import { Tenant } from '../models/Tenant';
 import { paystackService } from './paystack.service';
 import { invoiceService } from './invoice.service';
 
@@ -84,13 +85,20 @@ export class PaymentService {
       throw new Error('Payment amount exceeds balance remaining');
     }
 
+    // Use invoice's centerId if not provided
+    const centerId = data.centerId || invoice.centerId;
+    if (!centerId) {
+      throw new Error('Center ID is required');
+    }
+
     const payment = this.paymentRepository.create({
       ...data,
+      centerId,
       referenceNumber: data.referenceNumber || this.generateReferenceNumber(),
       status: data.paymentMethod === 'cash' ? 'completed' : 'pending',
-      processedAt: data.paymentMethod === 'cash' ? new Date() : null,
+      processedAt: data.paymentMethod === 'cash' ? new Date() : undefined,
       currency: data.currency || 'GHS',
-    });
+    } as any);
 
     const savedPayment = await this.paymentRepository.save(payment);
 
@@ -135,6 +143,19 @@ export class PaymentService {
       throw new Error('Payment amount exceeds balance remaining');
     }
 
+    // Use invoice's centerId if not provided
+    const centerId = data.centerId || invoice.centerId;
+    if (!centerId) {
+      throw new Error('Center ID is required');
+    }
+
+    // Fetch tenant to get subaccount code for payment splitting
+    const tenantRepository = AppDataSource.getRepository(Tenant);
+    const tenant = await tenantRepository.findOne({
+      where: { id: data.tenantId },
+      select: ['id', 'paystackSubaccountCode', 'platformFeePercentage'],
+    });
+
     // Generate reference number
     const referenceNumber = this.generateReferenceNumber();
 
@@ -144,7 +165,7 @@ export class PaymentService {
     // Create payment record
     const payment = this.paymentRepository.create({
       tenantId: data.tenantId,
-      centerId: data.centerId,
+      centerId,
       invoiceId: data.invoiceId,
       amount: data.amount,
       referenceNumber,
@@ -161,22 +182,45 @@ export class PaymentService {
 
     // Initialize payment with Paystack
     try {
-      const paystackResponse = await paystackService.initializePayment({
-        email: data.email,
-        amount: amountInKobo,
-        reference: referenceNumber,
-        currency: 'GHS',
-        metadata: {
-          ...data.metadata,
-          invoiceId: data.invoiceId,
-          invoiceNumber: invoice.invoiceNumber,
-          childId: invoice.childId,
-          childName: invoice.child?.firstName + ' ' + invoice.child?.lastName,
-          tenantId: data.tenantId,
-          centerId: data.centerId,
-        },
-        channels: data.paymentMethod === 'card' ? ['card'] : ['mobile_money'],
-      });
+      const paymentMetadata = {
+        ...data.metadata,
+        invoiceId: data.invoiceId,
+        invoiceNumber: invoice.invoiceNumber,
+        childId: invoice.childId,
+        childName: invoice.child?.firstName + ' ' + invoice.child?.lastName,
+        tenantId: data.tenantId,
+        centerId: centerId,
+      };
+
+      let paystackResponse;
+
+      // Check if tenant has a REAL subaccount (not a test subaccount)
+      const hasRealSubaccount = tenant?.paystackSubaccountCode &&
+        !tenant.paystackSubaccountCode.startsWith('TEST_ACCT_');
+
+      // Use split payment if tenant has a real subaccount configured
+      if (hasRealSubaccount) {
+        paystackResponse = await paystackService.initializePaymentWithSplit({
+          email: data.email,
+          amount: amountInKobo,
+          reference: referenceNumber,
+          currency: 'GHS',
+          metadata: paymentMetadata,
+          channels: data.paymentMethod === 'card' ? ['card'] : ['mobile_money'],
+          subaccount: tenant.paystackSubaccountCode!,
+          bearer: 'account', // Platform bears the transaction charges
+        });
+      } else {
+        // Regular payment without split (test mode or no subaccount - all goes to platform)
+        paystackResponse = await paystackService.initializePayment({
+          email: data.email,
+          amount: amountInKobo,
+          reference: referenceNumber,
+          currency: 'GHS',
+          metadata: paymentMetadata,
+          channels: data.paymentMethod === 'card' ? ['card'] : ['mobile_money'],
+        });
+      }
 
       return {
         payment,

@@ -105,10 +105,24 @@ export class ChildController {
       // Filter by staff's classId if user is staff/teacher
       const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
 
-      // For non-managers: centerId is required
+      // For non-managers: use their centerId from token if not provided in query
+      // For managers: use query param (optional)
+      const effectiveCenterId = centerId || (!isManager ? tenant.centerId : undefined);
+
+      console.log('[Children Debug] listChildren called:', {
+        role: tenant.role,
+        isManager,
+        tenantCenterId: tenant.centerId,
+        tenantClassId: tenant.classId,
+        queryCenterId: centerId,
+        effectiveCenterId,
+        queryClassId: classId,
+      });
+
+      // For non-managers: centerId is required (from query or token)
       // For managers: centerId is optional (if not provided, fetch all children in tenant)
-      if (!isManager && !centerId) {
-        return sendBadRequest(reply, 'centerId query parameter is required');
+      if (!isManager && !effectiveCenterId) {
+        return sendBadRequest(reply, 'centerId is required. Please ensure you are assigned to a center.');
       }
 
       // For non-managers: use their assigned classId (if they have one), otherwise use a non-existent ID to return empty results
@@ -117,10 +131,12 @@ export class ChildController {
         ? (tenant.classId || 'no-class-assigned') // Staff without class sees nothing
         : classId; // Managers can optionally filter by class
 
-      const [children, total] = centerId
+      console.log('[Children Debug] Filter classId:', filterClassId);
+
+      const [children, total] = effectiveCenterId
         ? await childService.getChildrenByCenter(
             tenant.tenantId,
-            centerId,
+            effectiveCenterId,
             { skip, take: Number(limit) },
             filterClassId
           )
@@ -587,6 +603,64 @@ export class ChildController {
   }
 
   /**
+   * Set child active status
+   * PUT /api/children/:childId/active-status
+   */
+  static async setActiveStatus(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const childService = getChildService();
+
+      const { childId } = request.params as { childId: string };
+      const { isActive } = request.body as { isActive: boolean };
+
+      if (typeof isActive !== 'boolean') {
+        return sendBadRequest(reply, 'isActive must be a boolean');
+      }
+
+      const child = await childService.setChildActiveStatus(tenant.tenantId, childId, isActive);
+
+      return sendSuccess(reply, { child }, `Child ${isActive ? 'activated' : 'deactivated'} successfully`);
+    } catch (error: any) {
+      if (error.message.includes('not found')) {
+        return sendNotFound(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Bulk set active status for multiple children
+   * PUT /api/children/bulk-active-status
+   */
+  static async bulkSetActiveStatus(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const childService = getChildService();
+
+      const { childIds, isActive } = request.body as { childIds: string[]; isActive: boolean };
+
+      if (!childIds || !Array.isArray(childIds) || childIds.length === 0) {
+        return sendBadRequest(reply, 'childIds must be a non-empty array');
+      }
+
+      if (typeof isActive !== 'boolean') {
+        return sendBadRequest(reply, 'isActive must be a boolean');
+      }
+
+      const result = await childService.bulkSetActiveStatus(tenant.tenantId, childIds, isActive);
+
+      return sendSuccess(
+        reply,
+        result,
+        `${result.updated} children ${isActive ? 'activated' : 'deactivated'} successfully`
+      );
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
    * Delete a child (soft delete)
    * DELETE /api/children/:id
    */
@@ -599,6 +673,119 @@ export class ChildController {
       await childService.deleteChild(tenant.tenantId, id);
 
       return sendSuccess(reply, null, 'Child deleted successfully');
+    } catch (error: any) {
+      if (error.message.includes('not found')) {
+        return sendNotFound(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Promote child to a new class
+   * POST /api/children/:childId/promote-to-class
+   */
+  static async promoteToClass(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const childService = getChildService();
+
+      const { childId } = request.params as { childId: string };
+      const { newClassId, reason, notes } = request.body as {
+        newClassId: string;
+        reason?: string;
+        notes?: string;
+      };
+
+      if (!newClassId) {
+        return sendBadRequest(reply, 'New class ID is required');
+      }
+
+      const result = await childService.promoteChild(
+        tenant.tenantId,
+        childId,
+        newClassId,
+        tenant.userId,
+        reason as any,
+        notes
+      );
+
+      return sendSuccess(reply, result, 'Child promoted successfully');
+    } catch (error: any) {
+      if (error.message.includes('not found')) {
+        return sendNotFound(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get eligible classes for child promotion
+   * GET /api/children/:childId/eligible-classes
+   */
+  static async getEligibleClasses(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const childService = getChildService();
+
+      const { childId } = request.params as { childId: string };
+
+      const classes = await childService.getEligibleClassesForPromotion(
+        tenant.tenantId,
+        childId
+      );
+
+      return sendSuccess(reply, { classes });
+    } catch (error: any) {
+      if (error.message.includes('not found')) {
+        return sendNotFound(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get child's class history
+   * GET /api/children/:childId/class-history
+   */
+  static async getClassHistory(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const childService = getChildService();
+
+      const { childId } = request.params as { childId: string };
+
+      const history = await childService.getChildClassHistory(
+        tenant.tenantId,
+        childId
+      );
+
+      return sendSuccess(reply, { history });
+    } catch (error: any) {
+      if (error.message.includes('not found')) {
+        return sendNotFound(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get child's full history (classes, attendance, activities, milestones)
+   * GET /api/children/:childId/full-history
+   */
+  static async getFullHistory(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const childService = getChildService();
+
+      const { childId } = request.params as { childId: string };
+
+      const history = await childService.getChildFullHistory(
+        tenant.tenantId,
+        childId
+      );
+
+      return sendSuccess(reply, history);
     } catch (error: any) {
       if (error.message.includes('not found')) {
         return sendNotFound(reply, error.message);

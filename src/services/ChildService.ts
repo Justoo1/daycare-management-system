@@ -2,7 +2,12 @@ import { AppDataSource } from '@config/database';
 import { Child } from '@models/Child';
 import { Guardian } from '@models/Guardian';
 import { Class } from '@models/Class';
-import { EnrollmentStatus } from '@shared';
+import { ClassHistory, ClassChangeReason } from '@models/ClassHistory';
+import { Attendance } from '@models/Attendance';
+import { ActivityLog } from '@models/ActivityLog';
+import { ProgressReport } from '@models/ProgressReport';
+import { Milestone } from '@models/Milestone';
+import { EnrollmentStatus, AttendanceStatus } from '@shared';
 import { Repository, In, IsNull } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -10,11 +15,21 @@ export class ChildService {
   private childRepository: Repository<Child>;
   private guardianRepository: Repository<Guardian>;
   private classRepository: Repository<Class>;
+  private classHistoryRepository: Repository<ClassHistory>;
+  private attendanceRepository: Repository<Attendance>;
+  private activityLogRepository: Repository<ActivityLog>;
+  private progressReportRepository: Repository<ProgressReport>;
+  private milestoneRepository: Repository<Milestone>;
 
   constructor() {
     this.childRepository = AppDataSource.getRepository(Child);
     this.guardianRepository = AppDataSource.getRepository(Guardian);
     this.classRepository = AppDataSource.getRepository(Class);
+    this.classHistoryRepository = AppDataSource.getRepository(ClassHistory);
+    this.attendanceRepository = AppDataSource.getRepository(Attendance);
+    this.activityLogRepository = AppDataSource.getRepository(ActivityLog);
+    this.progressReportRepository = AppDataSource.getRepository(ProgressReport);
+    this.milestoneRepository = AppDataSource.getRepository(Milestone);
   }
 
   /**
@@ -80,11 +95,12 @@ export class ChildService {
       ...childData,
       enrollmentStatus: EnrollmentStatus.PENDING,
       applicationDate: new Date(),
-      isActive: false,
+      isActive: true,
     });
 
-    // If classId is provided, set the class relationship
+    // If classId is provided, set both the classId column and the class relationship
     if (classId) {
+      child.classId = classId;
       child.class = { id: classId } as any;
     }
 
@@ -282,6 +298,7 @@ export class ChildService {
     // Check class capacity before enrolling
     await this.checkClassCapacity(tenantId, classId);
 
+    child.classId = classId;
     child.class = { id: classId } as any;
     child.enrollmentStatus = EnrollmentStatus.ENROLLED;
     child.enrollmentDate = new Date();
@@ -329,6 +346,7 @@ export class ChildService {
     child.waitlistAddedDate = new Date();
 
     if (classId) {
+      child.classId = classId;
       child.class = { id: classId } as any;
     }
 
@@ -404,6 +422,7 @@ export class ChildService {
 
     child.enrollmentStatus = EnrollmentStatus.ENROLLED;
     child.enrollmentDate = new Date();
+    child.classId = classId;
     child.class = { id: classId } as any;
     child.isActive = true;
     (child as any).waitlistPosition = null;
@@ -502,6 +521,7 @@ export class ChildService {
     for (const child of children) {
       const enrollment = enrollments.find(e => e.childId === child.id);
       if (enrollment) {
+        child.classId = enrollment.classId;
         child.class = { id: enrollment.classId } as any;
         child.enrollmentStatus = EnrollmentStatus.ENROLLED;
         child.enrollmentDate = new Date();
@@ -622,6 +642,43 @@ export class ChildService {
   }
 
   /**
+   * Set child active status
+   */
+  async setChildActiveStatus(
+    tenantId: string,
+    childId: string,
+    isActive: boolean
+  ): Promise<Child> {
+    const child = await this.getChildById(tenantId, childId);
+    if (!child) {
+      throw new Error('Child not found');
+    }
+
+    child.isActive = isActive;
+    return this.childRepository.save(child);
+  }
+
+  /**
+   * Bulk set active status for multiple children
+   */
+  async bulkSetActiveStatus(
+    tenantId: string,
+    childIds: string[],
+    isActive: boolean
+  ): Promise<{ updated: number }> {
+    const result = await this.childRepository
+      .createQueryBuilder()
+      .update(Child)
+      .set({ isActive })
+      .where('tenantId = :tenantId', { tenantId })
+      .andWhere('id IN (:...childIds)', { childIds })
+      .andWhere('deletedAt IS NULL')
+      .execute();
+
+    return { updated: result.affected || 0 };
+  }
+
+  /**
    * Delete a child (soft delete by setting deletedAt)
    */
   async deleteChild(tenantId: string, childId: string): Promise<void> {
@@ -636,6 +693,282 @@ export class ChildService {
     // Soft delete by setting deletedAt timestamp
     child.deletedAt = new Date();
     await this.childRepository.save(child);
+  }
+
+  /**
+   * Promote a child to a new class
+   */
+  async promoteChild(
+    tenantId: string,
+    childId: string,
+    newClassId: string,
+    promotedByUserId: string,
+    reason: ClassChangeReason = ClassChangeReason.PROMOTION,
+    notes?: string
+  ): Promise<{ child: Child; history: ClassHistory }> {
+    const child = await this.getChildById(tenantId, childId);
+    if (!child) {
+      throw new Error('Child not found');
+    }
+
+    const newClass = await this.classRepository.findOne({
+      where: { id: newClassId, tenantId, deletedAt: IsNull() },
+    });
+
+    if (!newClass) {
+      throw new Error('Target class not found');
+    }
+
+    // Check capacity
+    await this.checkClassCapacity(tenantId, newClassId);
+
+    const oldClassId = child.classId;
+    const oldClassName = child.class?.name || 'No Class';
+    const today = new Date();
+
+    // Calculate performance stats for the old class
+    let attendanceStats = { rate: 0, present: 0, absent: 0 };
+    let totalActivities = 0;
+    let milestonesCount = 0;
+
+    if (oldClassId) {
+      // Get attendance stats
+      const attendances = await this.attendanceRepository.find({
+        where: { childId, tenantId, classId: oldClassId, deletedAt: IsNull() },
+      });
+
+      if (attendances.length > 0) {
+        const present = attendances.filter(a => a.status === AttendanceStatus.PRESENT || a.status === AttendanceStatus.LATE).length;
+        const absent = attendances.filter(a => a.status === AttendanceStatus.ABSENT).length;
+        attendanceStats = {
+          rate: attendances.length > 0 ? (present / attendances.length) * 100 : 0,
+          present,
+          absent,
+        };
+      }
+
+      // Get activity count
+      totalActivities = await this.activityLogRepository.count({
+        where: { childId, tenantId, deletedAt: IsNull() },
+      });
+
+      // Get milestones count
+      milestonesCount = await this.milestoneRepository.count({
+        where: { childId, tenantId, isActive: true },
+      });
+
+      // Close the current class history entry
+      const currentHistory = await this.classHistoryRepository.findOne({
+        where: { childId, tenantId, endDate: IsNull() },
+      });
+
+      if (currentHistory) {
+        currentHistory.endDate = today;
+        currentHistory.attendanceRate = attendanceStats.rate;
+        currentHistory.totalDaysPresent = attendanceStats.present;
+        currentHistory.totalDaysAbsent = attendanceStats.absent;
+        currentHistory.totalActivities = totalActivities;
+        currentHistory.milestonesAchieved = milestonesCount;
+        currentHistory.teacherRemarks = notes;
+        await this.classHistoryRepository.save(currentHistory);
+      }
+    }
+
+    // Create new class history entry
+    const newHistory = this.classHistoryRepository.create({
+      tenantId,
+      childId,
+      classId: newClassId,
+      className: newClass.name,
+      ageGroupMin: newClass.ageGroupMin,
+      ageGroupMax: newClass.ageGroupMax,
+      startDate: today,
+      reason,
+      notes: `Promoted from ${oldClassName} to ${newClass.name}${notes ? '. ' + notes : ''}`,
+      promotedBy: promotedByUserId,
+    });
+    // endDate is null by default for current class
+
+    await this.classHistoryRepository.save(newHistory);
+
+    // Update the child's class
+    child.classId = newClassId;
+    child.class = newClass;
+    await this.childRepository.save(child);
+
+    // Reload child with relationships
+    const updatedChild = await this.getChildById(tenantId, childId);
+
+    return { child: updatedChild!, history: newHistory };
+  }
+
+  /**
+   * Get child's class history
+   */
+  async getChildClassHistory(
+    tenantId: string,
+    childId: string
+  ): Promise<ClassHistory[]> {
+    return this.classHistoryRepository.find({
+      where: { childId, tenantId },
+      relations: ['class', 'promoter'],
+      order: { startDate: 'DESC' },
+    });
+  }
+
+  /**
+   * Get comprehensive child history including attendance, activities, milestones
+   */
+  async getChildFullHistory(
+    tenantId: string,
+    childId: string
+  ): Promise<{
+    classHistory: ClassHistory[];
+    attendanceSummary: {
+      total: number;
+      present: number;
+      absent: number;
+      late: number;
+      rate: number;
+    };
+    recentAttendance: Attendance[];
+    recentActivities: ActivityLog[];
+    progressReports: ProgressReport[];
+    milestones: Milestone[];
+  }> {
+    const child = await this.getChildById(tenantId, childId);
+    if (!child) {
+      throw new Error('Child not found');
+    }
+
+    // Get class history
+    const classHistory = await this.classHistoryRepository.find({
+      where: { childId, tenantId },
+      relations: ['promoter'],
+      order: { startDate: 'DESC' },
+    });
+
+    // Get all attendance records
+    const allAttendance = await this.attendanceRepository.find({
+      where: { childId, tenantId, deletedAt: IsNull() },
+    });
+
+    const present = allAttendance.filter(a => a.status === AttendanceStatus.PRESENT).length;
+    const absent = allAttendance.filter(a => a.status === AttendanceStatus.ABSENT).length;
+    const late = allAttendance.filter(a => a.status === AttendanceStatus.LATE).length;
+
+    // Get recent attendance (last 30 records)
+    const recentAttendance = await this.attendanceRepository.find({
+      where: { childId, tenantId, deletedAt: IsNull() },
+      relations: ['class'],
+      order: { date: 'DESC' },
+      take: 30,
+    });
+
+    // Get recent activities (last 50)
+    const recentActivities = await this.activityLogRepository.find({
+      where: { childId, tenantId, deletedAt: IsNull() },
+      relations: ['recordedByUser'],
+      order: { date: 'DESC' },
+      take: 50,
+    });
+
+    // Get progress reports
+    const progressReports = await this.progressReportRepository.find({
+      where: { childId, tenantId, isActive: true },
+      relations: ['generator'],
+      order: { generatedAt: 'DESC' },
+    });
+
+    // Get milestones
+    const milestones = await this.milestoneRepository.find({
+      where: { childId, tenantId, isActive: true },
+      order: { dateAchieved: 'DESC' },
+    });
+
+    return {
+      classHistory,
+      attendanceSummary: {
+        total: allAttendance.length,
+        present,
+        absent,
+        late,
+        rate: allAttendance.length > 0 ? (present / allAttendance.length) * 100 : 0,
+      },
+      recentAttendance,
+      recentActivities,
+      progressReports,
+      milestones,
+    };
+  }
+
+  /**
+   * Create initial class history when a child is first assigned to a class
+   */
+  async createInitialClassHistory(
+    tenantId: string,
+    childId: string,
+    classId: string,
+    userId?: string
+  ): Promise<ClassHistory> {
+    const classEntity = await this.classRepository.findOne({
+      where: { id: classId, tenantId },
+    });
+
+    if (!classEntity) {
+      throw new Error('Class not found');
+    }
+
+    const history = this.classHistoryRepository.create({
+      tenantId,
+      childId,
+      classId,
+      className: classEntity.name,
+      ageGroupMin: classEntity.ageGroupMin,
+      ageGroupMax: classEntity.ageGroupMax,
+      startDate: new Date(),
+      endDate: null,
+      reason: ClassChangeReason.INITIAL_ENROLLMENT,
+      notes: `Initially enrolled in ${classEntity.name}`,
+      promotedBy: userId,
+    });
+
+    return this.classHistoryRepository.save(history);
+  }
+
+  /**
+   * Get eligible classes for promotion (based on age progression)
+   */
+  async getEligibleClassesForPromotion(
+    tenantId: string,
+    childId: string
+  ): Promise<Class[]> {
+    const child = await this.getChildById(tenantId, childId);
+    if (!child) {
+      throw new Error('Child not found');
+    }
+
+    const ageInMonths = child.getAgeInMonths();
+    const currentClassId = child.classId;
+    const centerId = child.centerId;
+
+    // Get all active classes that the child could fit into
+    const classes = await this.classRepository.find({
+      where: {
+        tenantId,
+        centerId,
+        isActive: true,
+        deletedAt: IsNull(),
+      },
+      order: { ageGroupMin: 'ASC' },
+    });
+
+    // Filter to classes where child's age is within range, excluding current class
+    return classes.filter(c =>
+      c.id !== currentClassId &&
+      ageInMonths >= c.ageGroupMin &&
+      ageInMonths <= c.ageGroupMax
+    );
   }
 }
 

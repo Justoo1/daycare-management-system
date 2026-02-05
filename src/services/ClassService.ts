@@ -22,6 +22,8 @@ export class ClassService {
       capacity: number;
       room?: string;
       schedule?: string;
+      startTime?: string; // HH:MM format - used for late arrival calculation
+      endTime?: string;   // HH:MM format - used for early pickup calculation
     }
   ): Promise<Class> {
     // Check if class with same name already exists in center
@@ -42,6 +44,8 @@ export class ClassService {
       capacity: data.capacity,
       room: data.room,
       schedule: data.schedule,
+      startTime: data.startTime,
+      endTime: data.endTime,
       isActive: true,
     });
 

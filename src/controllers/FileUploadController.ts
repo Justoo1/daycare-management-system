@@ -1,5 +1,5 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
-import { getFileUploadService } from '@services/FileUploadService';
+import { getImageKitService } from '@services/ImageKitService';
 import { sendSuccess, sendBadRequest, sendServerError } from '@utils/response';
 import { TenantContext } from '@shared';
 import { MultipartFile } from '@fastify/multipart';
@@ -12,10 +12,10 @@ export class FileUploadController {
   static async uploadPhoto(request: FastifyRequest, reply: FastifyReply) {
     try {
       const tenant = (request as any).tenant as TenantContext;
-      const fileUploadService = getFileUploadService();
+      const imageKitService = getImageKitService();
 
-      if (!fileUploadService.isConfigured()) {
-        return sendServerError(reply, 'File upload service not configured. Please set AWS S3 credentials.');
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
       }
 
       const data = await request.file();
@@ -25,26 +25,28 @@ export class FileUploadController {
       }
 
       // Validate file type (images only)
-      const allowedTypes = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-      if (!fileUploadService.validateFileType(data.filename, allowedTypes)) {
+      const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      const fileExt = '.' + (data.filename.split('.').pop()?.toLowerCase() || '');
+      if (!allowedExtensions.includes(fileExt)) {
         return sendBadRequest(reply, 'Invalid file type. Only images are allowed.');
       }
 
       // Validate file size (10MB max)
       const buffer = await data.toBuffer();
-      if (!fileUploadService.validateFileSize(buffer.length, 10)) {
+      const maxSizeMB = 10;
+      if (buffer.length > maxSizeMB * 1024 * 1024) {
         return sendBadRequest(reply, 'File size exceeds 10MB limit');
       }
 
-      // Upload to S3
-      const fileUrl = await fileUploadService.uploadFile(
+      // Upload to ImageKit
+      const result = await imageKitService.uploadFile(
         buffer,
         data.filename,
-        'photos',
+        '/photos',
         tenant.tenantId
       );
 
-      return sendSuccess(reply, { fileUrl }, 'Photo uploaded successfully');
+      return sendSuccess(reply, { fileUrl: result.url, fileId: result.fileId }, 'Photo uploaded successfully');
     } catch (error: any) {
       return sendServerError(reply, error.message);
     }
@@ -57,29 +59,31 @@ export class FileUploadController {
   static async uploadPhotos(request: FastifyRequest, reply: FastifyReply) {
     try {
       const tenant = (request as any).tenant as TenantContext;
-      const fileUploadService = getFileUploadService();
+      const imageKitService = getImageKitService();
 
-      if (!fileUploadService.isConfigured()) {
-        return sendServerError(reply, 'File upload service not configured');
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
       }
 
       const parts = request.parts();
       const files: Array<{ buffer: Buffer; fileName: string }> = [];
-      const allowedTypes = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      const maxSizeMB = 10;
 
       for await (const part of parts) {
         if (part.type === 'file') {
           const file = part as MultipartFile;
 
           // Validate file type
-          if (!fileUploadService.validateFileType(file.filename, allowedTypes)) {
+          const fileExt = '.' + (file.filename.split('.').pop()?.toLowerCase() || '');
+          if (!allowedExtensions.includes(fileExt)) {
             return sendBadRequest(reply, `Invalid file type: ${file.filename}`);
           }
 
           const buffer = await file.toBuffer();
 
           // Validate file size
-          if (!fileUploadService.validateFileSize(buffer.length, 10)) {
+          if (buffer.length > maxSizeMB * 1024 * 1024) {
             return sendBadRequest(reply, `File size exceeds limit: ${file.filename}`);
           }
 
@@ -91,12 +95,14 @@ export class FileUploadController {
         return sendBadRequest(reply, 'No files provided');
       }
 
-      // Upload all files
-      const fileUrls = await fileUploadService.uploadMultipleFiles(
+      // Upload all files to ImageKit
+      const results = await imageKitService.uploadMultipleFiles(
         files,
-        'photos',
+        '/photos',
         tenant.tenantId
       );
+
+      const fileUrls = results.map(r => r.url);
 
       return sendSuccess(reply, { fileUrls, count: fileUrls.length }, 'Photos uploaded successfully');
     } catch (error: any) {
@@ -111,10 +117,10 @@ export class FileUploadController {
   static async uploadDocument(request: FastifyRequest, reply: FastifyReply) {
     try {
       const tenant = (request as any).tenant as TenantContext;
-      const fileUploadService = getFileUploadService();
+      const imageKitService = getImageKitService();
 
-      if (!fileUploadService.isConfigured()) {
-        return sendServerError(reply, 'File upload service not configured');
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
       }
 
       const data = await request.file();
@@ -124,26 +130,28 @@ export class FileUploadController {
       }
 
       // Validate file type (documents only)
-      const allowedTypes = ['.pdf', '.doc', '.docx', '.xls', '.xlsx'];
-      if (!fileUploadService.validateFileType(data.filename, allowedTypes)) {
+      const allowedExtensions = ['.pdf', '.doc', '.docx', '.xls', '.xlsx'];
+      const fileExt = '.' + (data.filename.split('.').pop()?.toLowerCase() || '');
+      if (!allowedExtensions.includes(fileExt)) {
         return sendBadRequest(reply, 'Invalid file type. Only documents are allowed.');
       }
 
       // Validate file size (20MB max for documents)
       const buffer = await data.toBuffer();
-      if (!fileUploadService.validateFileSize(buffer.length, 20)) {
+      const maxSizeMB = 20;
+      if (buffer.length > maxSizeMB * 1024 * 1024) {
         return sendBadRequest(reply, 'File size exceeds 20MB limit');
       }
 
-      // Upload to S3
-      const fileUrl = await fileUploadService.uploadFile(
+      // Upload to ImageKit
+      const result = await imageKitService.uploadFile(
         buffer,
         data.filename,
-        'documents',
+        '/documents',
         tenant.tenantId
       );
 
-      return sendSuccess(reply, { fileUrl }, 'Document uploaded successfully');
+      return sendSuccess(reply, { fileUrl: result.url, fileId: result.fileId }, 'Document uploaded successfully');
     } catch (error: any) {
       return sendServerError(reply, error.message);
     }
@@ -156,10 +164,10 @@ export class FileUploadController {
   static async uploadVideo(request: FastifyRequest, reply: FastifyReply) {
     try {
       const tenant = (request as any).tenant as TenantContext;
-      const fileUploadService = getFileUploadService();
+      const imageKitService = getImageKitService();
 
-      if (!fileUploadService.isConfigured()) {
-        return sendServerError(reply, 'File upload service not configured');
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
       }
 
       const data = await request.file();
@@ -169,26 +177,28 @@ export class FileUploadController {
       }
 
       // Validate file type (videos only)
-      const allowedTypes = ['.mp4', '.mov', '.avi', '.webm'];
-      if (!fileUploadService.validateFileType(data.filename, allowedTypes)) {
+      const allowedExtensions = ['.mp4', '.mov', '.avi', '.webm'];
+      const fileExt = '.' + (data.filename.split('.').pop()?.toLowerCase() || '');
+      if (!allowedExtensions.includes(fileExt)) {
         return sendBadRequest(reply, 'Invalid file type. Only videos are allowed.');
       }
 
       // Validate file size (100MB max for videos)
       const buffer = await data.toBuffer();
-      if (!fileUploadService.validateFileSize(buffer.length, 100)) {
+      const maxSizeMB = 100;
+      if (buffer.length > maxSizeMB * 1024 * 1024) {
         return sendBadRequest(reply, 'File size exceeds 100MB limit');
       }
 
-      // Upload to S3
-      const fileUrl = await fileUploadService.uploadFile(
+      // Upload to ImageKit
+      const result = await imageKitService.uploadFile(
         buffer,
         data.filename,
-        'videos',
+        '/videos',
         tenant.tenantId
       );
 
-      return sendSuccess(reply, { fileUrl }, 'Video uploaded successfully');
+      return sendSuccess(reply, { fileUrl: result.url, fileId: result.fileId }, 'Video uploaded successfully');
     } catch (error: any) {
       return sendServerError(reply, error.message);
     }
@@ -201,10 +211,10 @@ export class FileUploadController {
   static async uploadVoiceNote(request: FastifyRequest, reply: FastifyReply) {
     try {
       const tenant = (request as any).tenant as TenantContext;
-      const fileUploadService = getFileUploadService();
+      const imageKitService = getImageKitService();
 
-      if (!fileUploadService.isConfigured()) {
-        return sendServerError(reply, 'File upload service not configured');
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
       }
 
       const data = await request.file();
@@ -214,26 +224,28 @@ export class FileUploadController {
       }
 
       // Validate file type (audio only)
-      const allowedTypes = ['.mp3', '.wav', '.m4a'];
-      if (!fileUploadService.validateFileType(data.filename, allowedTypes)) {
+      const allowedExtensions = ['.mp3', '.wav', '.m4a'];
+      const fileExt = '.' + (data.filename.split('.').pop()?.toLowerCase() || '');
+      if (!allowedExtensions.includes(fileExt)) {
         return sendBadRequest(reply, 'Invalid file type. Only audio files are allowed.');
       }
 
       // Validate file size (10MB max)
       const buffer = await data.toBuffer();
-      if (!fileUploadService.validateFileSize(buffer.length, 10)) {
+      const maxSizeMB = 10;
+      if (buffer.length > maxSizeMB * 1024 * 1024) {
         return sendBadRequest(reply, 'File size exceeds 10MB limit');
       }
 
-      // Upload to S3
-      const fileUrl = await fileUploadService.uploadFile(
+      // Upload to ImageKit
+      const result = await imageKitService.uploadFile(
         buffer,
         data.filename,
-        'voice-notes',
+        '/voice-notes',
         tenant.tenantId
       );
 
-      return sendSuccess(reply, { fileUrl }, 'Voice note uploaded successfully');
+      return sendSuccess(reply, { fileUrl: result.url, fileId: result.fileId }, 'Voice note uploaded successfully');
     } catch (error: any) {
       return sendServerError(reply, error.message);
     }
@@ -245,18 +257,24 @@ export class FileUploadController {
    */
   static async deleteFile(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const fileUploadService = getFileUploadService();
-      const { fileUrl } = request.body as { fileUrl: string };
+      const imageKitService = getImageKitService();
+      const { fileId, fileUrl } = request.body as { fileId?: string; fileUrl?: string };
 
-      if (!fileUrl) {
-        return sendBadRequest(reply, 'File URL is required');
+      if (!fileId && !fileUrl) {
+        return sendBadRequest(reply, 'File ID or URL is required');
       }
 
-      if (!fileUploadService.isConfigured()) {
-        return sendServerError(reply, 'File upload service not configured');
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
       }
 
-      await fileUploadService.deleteFile(fileUrl);
+      // If only fileUrl provided, we need the fileId for ImageKit deletion
+      // For now, require fileId for deletion
+      if (!fileId) {
+        return sendBadRequest(reply, 'File ID is required for deletion. Please provide the fileId.');
+      }
+
+      await imageKitService.deleteFile(fileId);
 
       return sendSuccess(reply, {}, 'File deleted successfully');
     } catch (error: any) {
@@ -265,25 +283,45 @@ export class FileUploadController {
   }
 
   /**
-   * Get presigned URL for temporary file access
+   * Get authentication parameters for client-side uploads
+   * POST /api/uploads/auth
+   */
+  static async getAuthParameters(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const imageKitService = getImageKitService();
+
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
+      }
+
+      const authParams = imageKitService.getAuthenticationParameters();
+
+      return sendSuccess(reply, authParams, 'Authentication parameters generated');
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get presigned URL for temporary file access (ImageKit URLs are public by default)
    * POST /api/uploads/presigned-url
    */
   static async getPresignedUrl(request: FastifyRequest, reply: FastifyReply) {
     try {
-      const fileUploadService = getFileUploadService();
-      const { fileUrl, expiresIn } = request.body as { fileUrl: string; expiresIn?: number };
+      const imageKitService = getImageKitService();
+      const { fileUrl } = request.body as { fileUrl: string; expiresIn?: number };
 
       if (!fileUrl) {
         return sendBadRequest(reply, 'File URL is required');
       }
 
-      if (!fileUploadService.isConfigured()) {
-        return sendServerError(reply, 'File upload service not configured');
+      if (!imageKitService.isConfigured()) {
+        return sendServerError(reply, 'File upload service not configured. Please set ImageKit credentials.');
       }
 
-      const presignedUrl = await fileUploadService.getPresignedUrl(fileUrl, expiresIn);
-
-      return sendSuccess(reply, { presignedUrl, expiresIn: expiresIn || 3600 }, 'Presigned URL generated');
+      // ImageKit URLs are publicly accessible by default
+      // Just return the same URL (could add transformations if needed)
+      return sendSuccess(reply, { presignedUrl: fileUrl }, 'URL generated');
     } catch (error: any) {
       return sendServerError(reply, error.message);
     }

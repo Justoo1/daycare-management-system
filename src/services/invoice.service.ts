@@ -95,6 +95,12 @@ export class InvoiceService {
       throw new Error('Child not found');
     }
 
+    // Use child's centerId if not provided (for users without a specific center like super_admin)
+    const centerId = data.centerId || child.centerId;
+    if (!centerId) {
+      throw new Error('Center ID is required. The child must be assigned to a center.');
+    }
+
     // Generate invoice number
     const invoiceNumber = await this.generateInvoiceNumber(data.tenantId);
 
@@ -106,6 +112,7 @@ export class InvoiceService {
 
     const invoice = this.invoiceRepository.create({
       ...data,
+      centerId, // Use the resolved centerId
       invoiceNumber,
       invoiceDate: new Date(),
       dueDate,

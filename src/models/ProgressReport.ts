@@ -46,14 +46,14 @@ export class ProgressReport {
   @Column('int', { nullable: true })
   totalDaysAbsent: number;
 
-  @Column('int', { nullable: true, default: 1 })
-  behaviorRating: number; // 1-5 scale
+  @Column('int', { nullable: true })
+  behaviorRating: number | null; // 1-5 scale
 
-  @Column('int', { nullable: true, default: 1 })
-  socialSkillsRating: number; // 1-5 scale
+  @Column('int', { nullable: true })
+  socialSkillsRating: number | null; // 1-5 scale
 
-  @Column('int', { nullable: true, default: 1 })
-  academicProgressRating: number; // 1-5 scale
+  @Column('int', { nullable: true })
+  academicProgressRating: number | null; // 1-5 scale
 
   @Column('text', { nullable: true })
   academicProgress: string; // Detailed academic progress notes

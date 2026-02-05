@@ -21,12 +21,14 @@ export class AnalyticsService {
 
   /**
    * Get attendance trends over time
+   * @param classId - Optional class ID to filter attendance (for teachers)
    */
   async getAttendanceTrends(
     tenantId: string,
     startDate: Date,
     endDate: Date,
-    groupBy: 'day' | 'week' | 'month' = 'day'
+    groupBy: 'day' | 'week' | 'month' = 'day',
+    classId?: string
   ): Promise<{
     trends: Array<{
       date: string;
@@ -43,19 +45,103 @@ export class AnalyticsService {
       lowestAttendanceDay: string;
     };
   }> {
-    const attendances = await this.attendanceRepository.find({
-      where: {
-        tenantId,
-        date: Between(startDate, endDate),
-        deletedAt: IsNull(),
-      },
-      relations: ['child'],
+    let attendances: Attendance[];
+
+    console.log('[AnalyticsService.getAttendanceTrends] Params:', {
+      tenantId,
+      startDate: startDate.toISOString(),
+      endDate: endDate.toISOString(),
+      groupBy,
+      classId,
     });
+
+    if (classId) {
+      // For class filtering, get attendance for children in the class
+      // This handles cases where attendance.classId might not be set
+
+      // Debug: Check all children with this classId (ignore isActive filter for debugging)
+      const allChildrenInClass = await this.childRepository.find({
+        where: { tenantId, classId },
+        select: ['id', 'firstName', 'lastName', 'isActive'],
+      });
+      console.log('[AnalyticsService.getAttendanceTrends] All children with classId (debug):',
+        allChildrenInClass.map(c => ({ id: c.id, name: `${c.firstName} ${c.lastName}`, isActive: c.isActive }))
+      );
+
+      // Query with all filters
+      const childrenInClass = await this.childRepository.find({
+        where: { tenantId, classId, isActive: true, deletedAt: IsNull() },
+        select: ['id'],
+      });
+
+      const childIds = childrenInClass.map((c) => c.id);
+      console.log('[AnalyticsService.getAttendanceTrends] Active children in class:', childIds.length, childIds);
+
+      if (childIds.length === 0) {
+        console.log('[AnalyticsService.getAttendanceTrends] No children in class, returning empty');
+        // No children in class, return empty trends
+        return {
+          trends: [],
+          summary: {
+            averageAttendanceRate: 0,
+            totalDays: 0,
+            peakAttendanceDay: '',
+            lowestAttendanceDay: '',
+          },
+        };
+      }
+
+      // Format dates for the query
+      const startDateStr = startDate.toISOString().split('T')[0];
+      const endDateStr = endDate.toISOString().split('T')[0];
+
+      console.log('[AnalyticsService.getAttendanceTrends] Date range:', startDateStr, 'to', endDateStr);
+
+      try {
+        attendances = await this.attendanceRepository
+          .createQueryBuilder('attendance')
+          .leftJoinAndSelect('attendance.child', 'child')
+          .where('attendance.tenantId = :tenantId', { tenantId })
+          .andWhere('DATE(attendance.date) >= :startDate', { startDate: startDateStr })
+          .andWhere('DATE(attendance.date) <= :endDate', { endDate: endDateStr })
+          .andWhere('attendance.deletedAt IS NULL')
+          .andWhere('attendance.childId IN (:...childIds)', { childIds })
+          .getMany();
+
+        console.log('[AnalyticsService.getAttendanceTrends] Found attendance records:', attendances.length);
+      } catch (queryError: any) {
+        console.error('[AnalyticsService.getAttendanceTrends] Query error:', queryError.message);
+        throw queryError;
+      }
+
+      // Debug: If no attendance found, check if there's ANY attendance for these children
+      if (attendances.length === 0 && childIds.length > 0) {
+        const anyAttendance = await this.attendanceRepository
+          .createQueryBuilder('attendance')
+          .where('attendance.tenantId = :tenantId', { tenantId })
+          .andWhere('attendance.childId IN (:...childIds)', { childIds })
+          .getCount();
+        console.log('[AnalyticsService.getAttendanceTrends] Total attendance records (any date) for these children:', anyAttendance);
+      }
+    } else {
+      // No class filter, get all attendance
+      attendances = await this.attendanceRepository.find({
+        where: {
+          tenantId,
+          date: Between(startDate, endDate),
+          deletedAt: IsNull(),
+        },
+        relations: ['child'],
+      });
+    }
 
     // Group by date
     const dateGroups = new Map<string, Attendance[]>();
     attendances.forEach((att) => {
-      const dateKey = att.date.toISOString().split('T')[0];
+      // Handle both Date objects and string dates from database
+      const dateKey = typeof att.date === 'string'
+        ? att.date.split('T')[0]
+        : att.date.toISOString().split('T')[0];
       if (!dateGroups.has(dateKey)) {
         dateGroups.set(dateKey, []);
       }
@@ -108,7 +194,7 @@ export class AnalyticsService {
         }
       });
 
-    return {
+    const result = {
       trends,
       summary: {
         averageAttendanceRate: trends.length > 0 ? totalAttendanceRate / trends.length : 0,
@@ -117,6 +203,13 @@ export class AnalyticsService {
         lowestAttendanceDay: lowestDay,
       },
     };
+
+    console.log('[AnalyticsService.getAttendanceTrends] Returning:', {
+      trendsCount: trends.length,
+      summary: result.summary,
+    });
+
+    return result;
   }
 
   /**
@@ -498,8 +591,10 @@ export class AnalyticsService {
 
   /**
    * Get overall dashboard summary
+   * @param tenantId - The tenant ID
+   * @param classId - Optional class ID to filter stats (for staff with VIEW_CLASS_CHILDREN permission)
    */
-  async getDashboardSummary(tenantId: string): Promise<{
+  async getDashboardSummary(tenantId: string, classId?: string): Promise<{
     children: {
       total: number;
       enrolled: number;
@@ -518,6 +613,7 @@ export class AnalyticsService {
       weekRate: number;
       monthRate: number;
     };
+    filteredByClass?: string;
   }> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
@@ -528,9 +624,16 @@ export class AnalyticsService {
     const monthAgo = new Date(today);
     monthAgo.setMonth(monthAgo.getMonth() - 1);
 
+    // Build where clause for children - filter by class if provided
+    const childrenWhere: any = { tenantId, isActive: true, deletedAt: IsNull() };
+    if (classId) {
+      childrenWhere.class = { id: classId };
+    }
+
     // Children stats
     const children = await this.childRepository.find({
-      where: { tenantId, isActive: true },
+      where: childrenWhere,
+      relations: ['class'],
     });
 
     const enrolled = children.filter(
@@ -541,9 +644,15 @@ export class AnalyticsService {
       (c) => c.enrollmentStatus === EnrollmentStatus.WAITLIST
     ).length;
 
+    // Build where clause for attendance - filter by class if provided
+    const attendanceWhere: any = { tenantId, date: today, deletedAt: IsNull() };
+    if (classId) {
+      attendanceWhere.classId = classId;
+    }
+
     // Today's attendance
     const todayAttendance = await this.attendanceRepository.find({
-      where: { tenantId, date: today, deletedAt: IsNull() },
+      where: attendanceWhere,
     });
 
     const todayPresent = todayAttendance.filter(
@@ -553,7 +662,7 @@ export class AnalyticsService {
       (a) => a.status === AttendanceStatus.ABSENT
     ).length;
 
-    // Staff stats
+    // Staff stats (staff stats are NOT filtered by class - managers see all staff)
     const staff = await this.staffRepository.find({
       where: { tenantId },
     });
@@ -569,21 +678,31 @@ export class AnalyticsService {
     ).length;
     const staffTodayAbsent = todayStaffAttendance.filter((a) => a.status === 'absent').length;
 
-    // Attendance rates
+    // Attendance rates - filter by class if provided
+    const weekAttendanceWhere: any = {
+      tenantId,
+      date: Between(weekAgo, today),
+      deletedAt: IsNull(),
+    };
+    if (classId) {
+      weekAttendanceWhere.classId = classId;
+    }
+
     const weekAttendance = await this.attendanceRepository.find({
-      where: {
-        tenantId,
-        date: Between(weekAgo, today),
-        deletedAt: IsNull(),
-      },
+      where: weekAttendanceWhere,
     });
 
+    const monthAttendanceWhere: any = {
+      tenantId,
+      date: Between(monthAgo, today),
+      deletedAt: IsNull(),
+    };
+    if (classId) {
+      monthAttendanceWhere.classId = classId;
+    }
+
     const monthAttendance = await this.attendanceRepository.find({
-      where: {
-        tenantId,
-        date: Between(monthAgo, today),
-        deletedAt: IsNull(),
-      },
+      where: monthAttendanceWhere,
     });
 
     const calculateRate = (attendances: Attendance[]) => {
@@ -592,7 +711,7 @@ export class AnalyticsService {
       return (present / attendances.length) * 100;
     };
 
-    return {
+    const result: any = {
       children: {
         total: children.length,
         enrolled,
@@ -612,6 +731,13 @@ export class AnalyticsService {
         monthRate: calculateRate(monthAttendance),
       },
     };
+
+    // Include filtered class info if filtering was applied
+    if (classId) {
+      result.filteredByClass = classId;
+    }
+
+    return result;
   }
 }
 

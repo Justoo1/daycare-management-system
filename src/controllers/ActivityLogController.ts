@@ -1,7 +1,47 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { getActivityLogService } from '@services/ActivityLogService';
-import { sendSuccess, sendCreated, sendBadRequest, sendNotFound, sendServerError, sendPaginatedSuccess } from '@utils/response';
+import { getChildService } from '@services/ChildService';
+import { sendSuccess, sendCreated, sendBadRequest, sendNotFound, sendServerError, sendPaginatedSuccess, sendForbidden } from '@utils/response';
 import { TenantContext } from '@shared';
+
+/**
+ * Validates that the staff member can perform actions on a child.
+ * Staff with only VIEW_CLASS_CHILDREN permission can only access children in their assigned class.
+ * Managers (super_admin, center_owner, director) can access all children.
+ *
+ * @returns Error message if validation fails, null if validation passes
+ */
+async function validateChildAccess(
+  tenant: TenantContext,
+  childId: string
+): Promise<string | null> {
+  // Managers can access all children
+  const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+  if (isManager) {
+    return null;
+  }
+
+  // Staff without an assigned class cannot log activities
+  if (!tenant.classId) {
+    return 'You must be assigned to a class before you can log activities';
+  }
+
+  // Check if the child belongs to the staff's assigned class
+  const childService = getChildService();
+  const child = await childService.getChildById(tenant.tenantId, childId);
+
+  if (!child) {
+    return 'Child not found';
+  }
+
+  // Check if child's class matches staff's assigned class
+  const childClassId = child.class?.id || (child as any).classId;
+  if (childClassId !== tenant.classId) {
+    return 'You can only log activities for children in your assigned class';
+  }
+
+  return null;
+}
 
 export class ActivityLogController {
   /**
@@ -23,10 +63,17 @@ export class ActivityLogController {
         foodItems,
         recordedByUserId,
         notes,
+        photoUrls,
       } = request.body as any;
 
       if (!centerId || !childId || !date || !time || !mealType || !mealStatus) {
         return sendBadRequest(reply, 'Missing required fields: centerId, childId, date, time, mealType, mealStatus');
+      }
+
+      // Validate staff can access this child
+      const accessError = await validateChildAccess(tenant, childId);
+      if (accessError) {
+        return sendForbidden(reply, accessError);
       }
 
       const activity = await activityLogService.logMeal(tenant.tenantId, centerId, childId, {
@@ -37,6 +84,7 @@ export class ActivityLogController {
         foodItems,
         recordedByUserId,
         notes,
+        photoUrls,
       });
 
       return sendCreated(reply, { activity }, 'Meal activity logged successfully');
@@ -63,10 +111,17 @@ export class ActivityLogController {
         napQuality,
         recordedByUserId,
         notes,
+        photoUrls,
       } = request.body as any;
 
       if (!centerId || !childId || !date || !time || !napDurationMinutes) {
         return sendBadRequest(reply, 'Missing required fields: centerId, childId, date, time, napDurationMinutes');
+      }
+
+      // Validate staff can access this child
+      const accessError = await validateChildAccess(tenant, childId);
+      if (accessError) {
+        return sendForbidden(reply, accessError);
       }
 
       const activity = await activityLogService.logNap(tenant.tenantId, centerId, childId, {
@@ -76,6 +131,7 @@ export class ActivityLogController {
         napQuality,
         recordedByUserId,
         notes,
+        photoUrls,
       });
 
       return sendCreated(reply, { activity }, 'Nap activity logged successfully');
@@ -101,10 +157,17 @@ export class ActivityLogController {
         diaperType,
         recordedByUserId,
         notes,
+        photoUrls,
       } = request.body as any;
 
       if (!centerId || !childId || !date || !time || !diaperType) {
         return sendBadRequest(reply, 'Missing required fields: centerId, childId, date, time, diaperType');
+      }
+
+      // Validate staff can access this child
+      const accessError = await validateChildAccess(tenant, childId);
+      if (accessError) {
+        return sendForbidden(reply, accessError);
       }
 
       const activity = await activityLogService.logDiaperChange(tenant.tenantId, centerId, childId, {
@@ -113,6 +176,7 @@ export class ActivityLogController {
         diaperType,
         recordedByUserId,
         notes,
+        photoUrls,
       });
 
       return sendCreated(reply, { activity }, 'Diaper change logged successfully');
@@ -145,6 +209,12 @@ export class ActivityLogController {
 
       if (!centerId || !childId || !date || !time) {
         return sendBadRequest(reply, 'Missing required fields: centerId, childId, date, time');
+      }
+
+      // Validate staff can access this child
+      const accessError = await validateChildAccess(tenant, childId);
+      if (accessError) {
+        return sendForbidden(reply, accessError);
       }
 
       const activity = await activityLogService.logLearningActivity(tenant.tenantId, centerId, childId, {
@@ -190,6 +260,12 @@ export class ActivityLogController {
         return sendBadRequest(reply, 'Missing required fields: centerId, childId, date, time, playDurationMinutes');
       }
 
+      // Validate staff can access this child
+      const accessError = await validateChildAccess(tenant, childId);
+      if (accessError) {
+        return sendForbidden(reply, accessError);
+      }
+
       const activity = await activityLogService.logOutdoorPlay(tenant.tenantId, centerId, childId, {
         date: new Date(date),
         time,
@@ -230,6 +306,12 @@ export class ActivityLogController {
 
       if (!centerId || !childId || !date || !time || !medicationName || !medicationDosage || authorized === undefined) {
         return sendBadRequest(reply, 'Missing required fields: centerId, childId, date, time, medicationName, medicationDosage, authorized');
+      }
+
+      // Validate staff can access this child
+      const accessError = await validateChildAccess(tenant, childId);
+      if (accessError) {
+        return sendForbidden(reply, accessError);
       }
 
       const activity = await activityLogService.logMedication(tenant.tenantId, centerId, childId, {
@@ -355,6 +437,89 @@ export class ActivityLogController {
   }
 
   /**
+   * Get enhanced daily summary for a child (for parent app)
+   * GET /api/activities/children/:childId/enhanced-daily-summary
+   *
+   * Returns a comprehensive daily summary with:
+   * - Child info and attendance
+   * - Activity summary with counts
+   * - Meals with consumption analysis
+   * - Sleep sessions with quality metrics
+   * - Bathroom/diaper changes
+   * - Learning activities with skills
+   * - Outdoor play time
+   * - Photo highlights
+   * - Teacher notes
+   * - Auto-generated insights
+   */
+  static async getEnhancedDailySummary(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const activityLogService = getActivityLogService();
+      const { childId } = request.params as { childId: string };
+      const { date } = request.query as { date?: string };
+
+      const summaryDate = date ? new Date(date) : new Date();
+
+      const summary = await activityLogService.getEnhancedDailySummary(tenant.tenantId, childId, summaryDate);
+
+      if (!summary) {
+        return sendNotFound(reply, 'Child not found or no data available');
+      }
+
+      return sendSuccess(reply, summary);
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get weekly summary for a child (for parent app)
+   * GET /api/activities/children/:childId/weekly-summary
+   *
+   * Returns a weekly overview with:
+   * - Week date range
+   * - Attendance rate and averages
+   * - Meal consumption breakdown
+   * - Sleep totals and averages
+   * - Activity breakdown by type
+   * - Skills learned
+   * - Mood breakdown
+   * - Photo highlights
+   * - Weekly highlights
+   */
+  static async getWeeklySummary(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const activityLogService = getActivityLogService();
+      const { childId } = request.params as { childId: string };
+      const { startDate } = request.query as { startDate?: string };
+
+      // Default to current week's Monday
+      let weekStart: Date;
+      if (startDate) {
+        weekStart = new Date(startDate);
+      } else {
+        weekStart = new Date();
+        const day = weekStart.getDay();
+        const diff = weekStart.getDate() - day + (day === 0 ? -6 : 1); // Adjust for Sunday
+        weekStart.setDate(diff);
+      }
+      weekStart.setHours(0, 0, 0, 0);
+
+      const summary = await activityLogService.getWeeklySummary(tenant.tenantId, childId, weekStart);
+
+      if (!summary) {
+        return sendNotFound(reply, 'Child not found or no data available');
+      }
+
+      return sendSuccess(reply, summary);
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
    * Get photo gallery for a child
    * GET /api/activities/children/:childId/photos
    */
@@ -416,6 +581,100 @@ export class ActivityLogController {
       if (error.message === 'Activity not found') {
         return sendNotFound(reply, error.message);
       }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get teacher class dashboard
+   * GET /api/activities/classes/:classId/dashboard
+   *
+   * Returns class-wide overview for teachers:
+   * - Class info and attendance summary
+   * - Present/absent/not checked-in children lists
+   * - Quick stats (activities, meals, naps, photos)
+   * - Activity timeline
+   * - Children needing attention
+   * - Meal status (breakfast/lunch/snack served/pending)
+   * - Recent photos
+   */
+  static async getTeacherClassDashboard(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const activityLogService = getActivityLogService();
+      const { classId } = request.params as { classId: string };
+      const { date } = request.query as { date?: string };
+
+      // Verify teacher has access to this class
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      if (!isManager && tenant.classId !== classId) {
+        return sendForbidden(reply, 'You can only view the dashboard for your assigned class');
+      }
+
+      const dashboardDate = date ? new Date(date) : new Date();
+
+      const dashboard = await activityLogService.getTeacherClassDashboard(
+        tenant.tenantId,
+        classId,
+        dashboardDate
+      );
+
+      return sendSuccess(reply, dashboard);
+    } catch (error: any) {
+      if (error.message === 'Class not found') {
+        return sendNotFound(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get class activity summary for a date range
+   * GET /api/activities/classes/:classId/summary
+   *
+   * Returns activity summary for reporting:
+   * - Activity breakdown by type
+   * - Activity breakdown by child
+   * - Daily breakdown
+   */
+  static async getClassActivitySummary(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const activityLogService = getActivityLogService();
+      const { classId } = request.params as { classId: string };
+      const { startDate, endDate } = request.query as { startDate?: string; endDate?: string };
+
+      // Verify teacher has access to this class
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      if (!isManager && tenant.classId !== classId) {
+        return sendForbidden(reply, 'You can only view reports for your assigned class');
+      }
+
+      // Default to current week if no dates provided
+      let start: Date;
+      let end: Date;
+
+      if (startDate && endDate) {
+        start = new Date(startDate);
+        end = new Date(endDate);
+      } else {
+        // Default to current week (Monday to Sunday)
+        end = new Date();
+        start = new Date();
+        const day = start.getDay();
+        const diff = start.getDate() - day + (day === 0 ? -6 : 1);
+        start.setDate(diff);
+      }
+
+      const summary = await activityLogService.getClassActivitySummary(
+        tenant.tenantId,
+        classId,
+        start,
+        end
+      );
+
+      return sendSuccess(reply, summary);
+    } catch (error: any) {
       return sendServerError(reply, error.message);
     }
   }

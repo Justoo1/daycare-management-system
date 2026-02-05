@@ -45,6 +45,12 @@ export class Class {
   @Column('text', { nullable: true })
   schedule: string;
 
+  @Column('time', { nullable: true })
+  startTime: string; // Class start time (HH:MM) - used for late arrival calculation
+
+  @Column('time', { nullable: true })
+  endTime: string; // Class end time (HH:MM) - used for early pickup calculation
+
   @Column('text', { nullable: true })
   classPhotoUrl: string;
 

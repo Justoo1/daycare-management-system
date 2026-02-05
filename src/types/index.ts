@@ -84,7 +84,106 @@ export enum StaffPosition {
   JANITOR = 'janitor',
   ADMINISTRATOR = 'administrator',
   SUPPORT_STAFF = 'support_staff',
+  ACCOUNTANT = 'accountant',
 }
+
+// Staff Permissions - Granular permissions for staff members
+export enum StaffPermission {
+  // Children Management
+  VIEW_ALL_CHILDREN = 'view_all_children',           // Can view all children (not just assigned class)
+  VIEW_CLASS_CHILDREN = 'view_class_children',       // Can view children in assigned class only
+  CREATE_CHILDREN = 'create_children',               // Can add new children
+  EDIT_CHILDREN = 'edit_children',                   // Can edit children's information
+  DELETE_CHILDREN = 'delete_children',               // Can delete children
+  MANAGE_CHILDREN = 'manage_children',               // Full access: add/edit/delete children (legacy, grants all)
+
+  // Activity Logging
+  LOG_ACTIVITIES = 'log_activities',                 // Can log activities (meals, naps, etc.)
+  VIEW_ACTIVITIES = 'view_activities',               // Can view activity logs
+
+  // Attendance
+  MANAGE_ATTENDANCE = 'manage_attendance',           // Can check-in/check-out children
+  VIEW_ATTENDANCE = 'view_attendance',               // Can view attendance records
+
+  // Billing & Payments
+  VIEW_BILLING = 'view_billing',                     // Can view invoices and payments
+  MANAGE_BILLING = 'manage_billing',                 // Can create/edit invoices
+  RECEIVE_PAYMENTS = 'receive_payments',             // Can record cash payments
+
+  // Messaging
+  SEND_MESSAGES = 'send_messages',                   // Can send messages to parents
+  VIEW_MESSAGES = 'view_messages',                   // Can view message history
+
+  // Reports
+  VIEW_REPORTS = 'view_reports',                     // Can view reports
+  GENERATE_REPORTS = 'generate_reports',             // Can generate/export reports
+
+  // Staff Management (admin only)
+  VIEW_STAFF = 'view_staff',                         // Can view staff list
+  MANAGE_STAFF = 'manage_staff',                     // Can add/edit/delete staff
+
+  // Class Management
+  VIEW_CLASSES = 'view_classes',                     // Can view class list
+  MANAGE_CLASSES = 'manage_classes',                 // Can add/edit/delete classes
+
+  // Center Management (admin only)
+  MANAGE_CENTERS = 'manage_centers',                 // Can manage center settings
+
+  // Dashboard & Stats
+  VIEW_DASHBOARD = 'view_dashboard',                 // Can view dashboard
+  VIEW_ALL_STATS = 'view_all_stats',                 // Can see stats for all classes
+}
+
+// Default permissions by role
+export const DEFAULT_PERMISSIONS_BY_ROLE: Record<UserRole, StaffPermission[]> = {
+  [UserRole.SUPER_ADMIN]: Object.values(StaffPermission), // All permissions
+  [UserRole.CENTER_OWNER]: Object.values(StaffPermission), // All permissions
+  [UserRole.DIRECTOR]: [
+    StaffPermission.VIEW_ALL_CHILDREN,
+    StaffPermission.CREATE_CHILDREN,
+    StaffPermission.EDIT_CHILDREN,
+    StaffPermission.DELETE_CHILDREN,
+    StaffPermission.MANAGE_CHILDREN,
+    StaffPermission.LOG_ACTIVITIES,
+    StaffPermission.VIEW_ACTIVITIES,
+    StaffPermission.MANAGE_ATTENDANCE,
+    StaffPermission.VIEW_ATTENDANCE,
+    StaffPermission.VIEW_BILLING,
+    StaffPermission.MANAGE_BILLING,
+    StaffPermission.RECEIVE_PAYMENTS,
+    StaffPermission.SEND_MESSAGES,
+    StaffPermission.VIEW_MESSAGES,
+    StaffPermission.VIEW_REPORTS,
+    StaffPermission.GENERATE_REPORTS,
+    StaffPermission.VIEW_STAFF,
+    StaffPermission.MANAGE_STAFF,
+    StaffPermission.VIEW_CLASSES,
+    StaffPermission.MANAGE_CLASSES,
+    StaffPermission.VIEW_DASHBOARD,
+    StaffPermission.VIEW_ALL_STATS,
+  ],
+  [UserRole.TEACHER]: [
+    StaffPermission.VIEW_CLASS_CHILDREN,
+    StaffPermission.EDIT_CHILDREN,                   // Teachers can edit children in their class
+    StaffPermission.LOG_ACTIVITIES,
+    StaffPermission.VIEW_ACTIVITIES,
+    StaffPermission.MANAGE_ATTENDANCE,
+    StaffPermission.VIEW_ATTENDANCE,
+    StaffPermission.SEND_MESSAGES,
+    StaffPermission.VIEW_MESSAGES,
+    StaffPermission.VIEW_CLASSES,
+    StaffPermission.VIEW_DASHBOARD,
+  ],
+  [UserRole.STAFF]: [
+    StaffPermission.VIEW_CLASS_CHILDREN,
+    StaffPermission.LOG_ACTIVITIES,
+    StaffPermission.VIEW_ACTIVITIES,
+    StaffPermission.MANAGE_ATTENDANCE,
+    StaffPermission.VIEW_ATTENDANCE,
+    StaffPermission.VIEW_DASHBOARD,
+  ],
+  [UserRole.PARENT]: [], // Parents don't have staff permissions
+};
 
 // Employment types
 export enum EmploymentType {

@@ -2,7 +2,7 @@ import { AppDataSource } from '@config/database';
 import { StaffProfile } from '@models/StaffProfile';
 import { User } from '@models/User';
 import { Class } from '@models/Class';
-import { StaffPosition, EmploymentType, UserRole } from '@shared';
+import { StaffPosition, EmploymentType, UserRole, StaffPermission, DEFAULT_PERMISSIONS_BY_ROLE } from '@shared';
 import { Repository } from 'typeorm';
 import { generateOTP, getOTPExpiryTime } from '@utils/jwt';
 
@@ -539,6 +539,165 @@ export class StaffService {
 
     staff.qrCode = qrCode;
     return this.staffRepository.save(staff);
+  }
+
+  // ==================== PERMISSION MANAGEMENT ====================
+
+  /**
+   * Get staff permissions
+   * Returns both the effective permissions and whether custom permissions are being used
+   */
+  async getStaffPermissions(
+    tenantId: string,
+    staffId: string
+  ): Promise<{
+    staffId: string;
+    role: UserRole;
+    useCustomPermissions: boolean;
+    customPermissions: StaffPermission[] | null;
+    effectivePermissions: StaffPermission[];
+    defaultPermissions: StaffPermission[];
+  }> {
+    const staff = await this.staffRepository.findOne({
+      where: { id: staffId, tenantId },
+      relations: ['user'],
+    });
+
+    if (!staff) {
+      throw new Error('Staff profile not found');
+    }
+
+    const role = staff.user.role;
+    const defaultPermissions = DEFAULT_PERMISSIONS_BY_ROLE[role] || [];
+    const customPermissions = staff.permissions as StaffPermission[] | null;
+    const useCustomPermissions = staff.useCustomPermissions;
+
+    // Calculate effective permissions
+    let effectivePermissions: StaffPermission[];
+    if (useCustomPermissions && customPermissions && customPermissions.length > 0) {
+      effectivePermissions = customPermissions;
+    } else {
+      effectivePermissions = defaultPermissions;
+    }
+
+    return {
+      staffId: staff.id,
+      role,
+      useCustomPermissions,
+      customPermissions,
+      effectivePermissions,
+      defaultPermissions,
+    };
+  }
+
+  /**
+   * Update staff permissions
+   * Allows admin to set custom permissions for a staff member
+   */
+  async updateStaffPermissions(
+    tenantId: string,
+    staffId: string,
+    permissions: StaffPermission[],
+    useCustomPermissions: boolean = true
+  ): Promise<StaffProfile> {
+    const staff = await this.getStaffById(tenantId, staffId);
+
+    if (!staff) {
+      throw new Error('Staff profile not found');
+    }
+
+    // Validate that all permissions are valid
+    const validPermissions = Object.values(StaffPermission);
+    const invalidPermissions = permissions.filter(p => !validPermissions.includes(p));
+    if (invalidPermissions.length > 0) {
+      throw new Error(`Invalid permissions: ${invalidPermissions.join(', ')}`);
+    }
+
+    staff.permissions = permissions;
+    staff.useCustomPermissions = useCustomPermissions;
+
+    return this.staffRepository.save(staff);
+  }
+
+  /**
+   * Reset staff permissions to default role permissions
+   */
+  async resetStaffPermissions(
+    tenantId: string,
+    staffId: string
+  ): Promise<StaffProfile> {
+    const staff = await this.getStaffById(tenantId, staffId);
+
+    if (!staff) {
+      throw new Error('Staff profile not found');
+    }
+
+    staff.permissions = null;
+    staff.useCustomPermissions = false;
+
+    return this.staffRepository.save(staff);
+  }
+
+  /**
+   * Get all available permissions with descriptions
+   */
+  static getAvailablePermissions(): Array<{
+    permission: StaffPermission;
+    category: string;
+    description: string;
+  }> {
+    return [
+      // Children Management
+      { permission: StaffPermission.VIEW_ALL_CHILDREN, category: 'Children', description: 'View all children across all classes' },
+      { permission: StaffPermission.VIEW_CLASS_CHILDREN, category: 'Children', description: 'View children in assigned class only' },
+      { permission: StaffPermission.CREATE_CHILDREN, category: 'Children', description: 'Add new children to the system' },
+      { permission: StaffPermission.EDIT_CHILDREN, category: 'Children', description: 'Edit children\'s information' },
+      { permission: StaffPermission.DELETE_CHILDREN, category: 'Children', description: 'Delete children from the system' },
+      { permission: StaffPermission.MANAGE_CHILDREN, category: 'Children', description: 'Full access: add, edit, and delete children' },
+
+      // Activity Logging
+      { permission: StaffPermission.LOG_ACTIVITIES, category: 'Activities', description: 'Log activities (meals, naps, etc.)' },
+      { permission: StaffPermission.VIEW_ACTIVITIES, category: 'Activities', description: 'View activity logs' },
+
+      // Attendance
+      { permission: StaffPermission.MANAGE_ATTENDANCE, category: 'Attendance', description: 'Check-in and check-out children' },
+      { permission: StaffPermission.VIEW_ATTENDANCE, category: 'Attendance', description: 'View attendance records' },
+
+      // Billing & Payments
+      { permission: StaffPermission.VIEW_BILLING, category: 'Billing', description: 'View invoices and payments' },
+      { permission: StaffPermission.MANAGE_BILLING, category: 'Billing', description: 'Create and edit invoices' },
+      { permission: StaffPermission.RECEIVE_PAYMENTS, category: 'Billing', description: 'Record cash payments' },
+
+      // Messaging
+      { permission: StaffPermission.SEND_MESSAGES, category: 'Messaging', description: 'Send messages to parents' },
+      { permission: StaffPermission.VIEW_MESSAGES, category: 'Messaging', description: 'View message history' },
+
+      // Reports
+      { permission: StaffPermission.VIEW_REPORTS, category: 'Reports', description: 'View reports' },
+      { permission: StaffPermission.GENERATE_REPORTS, category: 'Reports', description: 'Generate and export reports' },
+
+      // Staff Management
+      { permission: StaffPermission.VIEW_STAFF, category: 'Staff', description: 'View staff list' },
+      { permission: StaffPermission.MANAGE_STAFF, category: 'Staff', description: 'Add, edit, and delete staff' },
+
+      // Class Management
+      { permission: StaffPermission.VIEW_CLASSES, category: 'Classes', description: 'View class list' },
+      { permission: StaffPermission.MANAGE_CLASSES, category: 'Classes', description: 'Add, edit, and delete classes' },
+
+      // Center Management
+      { permission: StaffPermission.MANAGE_CENTERS, category: 'Centers', description: 'Manage center settings' },
+
+      // Dashboard
+      { permission: StaffPermission.VIEW_DASHBOARD, category: 'Dashboard', description: 'View dashboard' },
+      { permission: StaffPermission.VIEW_ALL_STATS, category: 'Dashboard', description: 'View statistics for all classes' },
+    ];
+  }
+
+  /**
+   * Get default permissions for a role
+   */
+  static getDefaultPermissionsForRole(role: UserRole): StaffPermission[] {
+    return DEFAULT_PERMISSIONS_BY_ROLE[role] || [];
   }
 }
 

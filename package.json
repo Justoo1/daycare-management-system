@@ -46,6 +46,7 @@
     "dotenv": "^16.3.1",
     "fastify": "^4.24.0",
     "fastify-plugin": "^4.5.0",
+    "imagekit": "^5.2.0",
     "jsonwebtoken": "^9.0.2",
     "paystack-node": "^0.3.0",
     "pg": "^8.10.0",

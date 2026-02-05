@@ -25,6 +25,13 @@ export class AttendanceController {
         checkedInByUserId,
       } = request.body as any;
 
+      console.log('[AttendanceController.checkIn] Request body:', {
+        childId,
+        centerId,
+        checkInTime,
+        checkInPhotoUrl: checkInPhotoUrl ? `URL received (length: ${checkInPhotoUrl.length})` : 'NOT PROVIDED',
+      });
+
       if (!childId || !checkInTime) {
         return sendBadRequest(reply, 'Child ID and check-in time are required');
       }
@@ -54,6 +61,11 @@ export class AttendanceController {
         },
         tenant.classId
       );
+
+      console.log('[AttendanceController.checkIn] Attendance saved:', {
+        id: attendance.id,
+        checkInPhotoUrl: attendance.checkInPhotoUrl ? `URL saved (length: ${attendance.checkInPhotoUrl.length})` : 'NOT SAVED',
+      });
 
       return sendCreated(reply, { attendance }, 'Child checked in successfully');
     } catch (error: any) {
@@ -87,6 +99,15 @@ export class AttendanceController {
         checkedOutByRelationship,
       } = request.body as any;
 
+      console.log('[AttendanceController.checkOut] Request body:', {
+        childId,
+        centerId,
+        checkOutTime,
+        checkOutPhotoUrl: checkOutPhotoUrl ? `URL received (length: ${checkOutPhotoUrl.length})` : 'NOT PROVIDED',
+        checkedOutByName,
+        checkedOutByRelationship,
+      });
+
       if (!childId || !checkOutTime || !checkedOutByName || !checkedOutByRelationship) {
         return sendBadRequest(reply, 'Child ID, check-out time, pickup person name, and relationship are required');
       }
@@ -109,6 +130,12 @@ export class AttendanceController {
         },
         tenant.classId
       );
+
+      console.log('[AttendanceController.checkOut] Attendance saved:', {
+        id: attendance.id,
+        checkOutPhotoUrl: attendance.checkOutPhotoUrl ? `URL saved (length: ${attendance.checkOutPhotoUrl.length})` : 'NOT SAVED',
+        checkInPhotoUrl: attendance.checkInPhotoUrl ? 'EXISTS' : 'NOT SET',
+      });
 
       return sendSuccess(reply, { attendance }, 'Child checked out successfully');
     } catch (error: any) {
@@ -141,6 +168,13 @@ export class AttendanceController {
         notes,
         checkedInByUserId,
       } = request.body as any;
+
+      console.log('[AttendanceController.checkInByQRCode] Request body:', {
+        qrCode,
+        centerId,
+        checkInTime,
+        checkInPhotoUrl: checkInPhotoUrl ? `URL received (length: ${checkInPhotoUrl.length})` : 'NOT PROVIDED',
+      });
 
       if (!qrCode || !checkInTime || !centerId) {
         return sendBadRequest(reply, 'QR code, center ID, and check-in time are required');
@@ -207,6 +241,15 @@ export class AttendanceController {
         checkedOutByRelationship,
       } = request.body as any;
 
+      console.log('[AttendanceController.checkOutByQRCode] Request body:', {
+        qrCode,
+        centerId,
+        checkOutTime,
+        checkOutPhotoUrl: checkOutPhotoUrl ? `URL received (length: ${checkOutPhotoUrl.length})` : 'NOT PROVIDED',
+        checkedOutByName,
+        checkedOutByRelationship,
+      });
+
       if (!qrCode || !checkOutTime || !centerId || !checkedOutByName || !checkedOutByRelationship) {
         return sendBadRequest(reply, 'QR code, center ID, check-out time, pickup person name, and relationship are required');
       }
@@ -268,15 +311,21 @@ export class AttendanceController {
       const tenant = (request as any).tenant as TenantContext;
       const attendanceService = getAttendanceService();
 
-      const { childId, date, reason, notifyParent } = request.body as any;
+      const { childId, centerId, date, reason, notifyParent } = request.body as any;
 
       if (!childId || !date) {
         return sendBadRequest(reply, 'Child ID and date are required');
       }
 
+      // Use centerId from request body, or fall back to tenant's centerId
+      const effectiveCenterId = centerId || tenant.centerId;
+      if (!effectiveCenterId) {
+        return sendBadRequest(reply, 'Center ID is required');
+      }
+
       const attendance = await attendanceService.recordAbsenceWithNotification(
         tenant.tenantId,
-        tenant.userId,
+        effectiveCenterId,
         childId,
         {
           date: new Date(date),
@@ -287,6 +336,9 @@ export class AttendanceController {
 
       return sendSuccess(reply, { attendance }, 'Absence recorded successfully');
     } catch (error: any) {
+      if (error.message.includes('already')) {
+        return sendBadRequest(reply, error.message);
+      }
       return sendServerError(reply, error.message);
     }
   }
@@ -312,6 +364,14 @@ export class AttendanceController {
         childId,
         new Date(date)
       );
+
+      console.log('[AttendanceController.getAttendanceByDate] Retrieved:', {
+        childId,
+        date,
+        found: !!attendance,
+        checkInPhotoUrl: attendance?.checkInPhotoUrl ? `URL exists (length: ${attendance.checkInPhotoUrl.length})` : 'NOT SET',
+        checkOutPhotoUrl: attendance?.checkOutPhotoUrl ? `URL exists (length: ${attendance.checkOutPhotoUrl.length})` : 'NOT SET',
+      });
 
       if (!attendance) {
         return sendNotFound(reply, 'No attendance record found for this date');
@@ -340,6 +400,15 @@ export class AttendanceController {
         endDate?: string;
       };
 
+      console.log('[AttendanceHistory] Request params:', {
+        childId,
+        tenantId: tenant.tenantId,
+        startDate,
+        endDate,
+        page,
+        limit
+      });
+
       const skip = (Number(page) - 1) * Number(limit);
 
       const [records, total] = await attendanceService.getAttendanceHistory(
@@ -352,6 +421,19 @@ export class AttendanceController {
           endDate: endDate ? new Date(endDate) : undefined,
         }
       );
+
+      console.log('[AttendanceHistory] Found records:', { total, recordCount: records.length });
+
+      // Log photo URLs in records
+      records.forEach((record, index) => {
+        if (record.checkInPhotoUrl || record.checkOutPhotoUrl) {
+          console.log(`[AttendanceHistory] Record ${index} has photos:`, {
+            id: record.id,
+            checkInPhotoUrl: record.checkInPhotoUrl ? 'YES' : 'NO',
+            checkOutPhotoUrl: record.checkOutPhotoUrl ? 'YES' : 'NO',
+          });
+        }
+      });
 
       return sendPaginatedSuccess(
         reply,
@@ -466,12 +548,284 @@ export class AttendanceController {
         dateToUse
       );
 
-      console.log('Center Attendance Records:', records);
+      console.log('Center Attendance Records:', records.length);
       console.log('Date Used:', dateToUse);
       console.log('Tenant ID:', tenant.tenantId);
       console.log('Center ID:', centerId);
 
+      // Log any records with photo URLs
+      const recordsWithPhotos = records.filter(r => r.checkInPhotoUrl || r.checkOutPhotoUrl);
+      if (recordsWithPhotos.length > 0) {
+        console.log('[getCenterAttendance] Records with photos:', recordsWithPhotos.map(r => ({
+          id: r.id,
+          childId: r.childId,
+          checkInPhotoUrl: r.checkInPhotoUrl ? 'YES' : 'NO',
+          checkOutPhotoUrl: r.checkOutPhotoUrl ? 'YES' : 'NO',
+        })));
+      } else {
+        console.log('[getCenterAttendance] No records have photo URLs');
+      }
+
       return sendSuccess(reply, { records });
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Initiate secure checkout with OTP verification
+   * POST /api/attendance/secure-checkout/initiate
+   * Sends OTP to pickup person's phone
+   */
+  static async initiateSecureCheckout(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const attendanceService = getAttendanceService();
+
+      const {
+        childId,
+        centerId,
+        pickupPersonName,
+        pickupPersonRelationship,
+        checkOutTime,
+        checkOutPhotoUrl,
+        notes,
+      } = request.body as any;
+
+      if (!childId || !centerId || !pickupPersonName || !pickupPersonRelationship || !checkOutTime) {
+        return sendBadRequest(reply, 'Child ID, center ID, pickup person name, relationship, and check-out time are required');
+      }
+
+      // Get staff's classId for validation
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      const staffClassId = isManager ? undefined : tenant.classId;
+
+      const result = await attendanceService.initiateSecureCheckout(
+        tenant.tenantId,
+        centerId,
+        childId,
+        {
+          pickupPersonName,
+          pickupPersonRelationship,
+          checkOutTime,
+          checkOutPhotoUrl,
+          notes,
+        },
+        tenant.userId,
+        staffClassId
+      );
+
+      return sendSuccess(reply, {
+        pendingCheckoutId: result.pendingCheckout.id,
+        childName: `${result.child.firstName} ${result.child.lastName}`,
+        pickupPersonName: result.pendingCheckout.pickupPersonName,
+        pickupPersonPhone: result.pendingCheckout.pickupPersonPhone.replace(/(\d{3})\d{4}(\d{3})/, '$1****$2'), // Mask phone number
+        expiresAt: result.pendingCheckout.expiresAt,
+      }, 'Verification code sent to pickup person');
+    } catch (error: any) {
+      if (error.message.includes('not found') || error.message.includes('No check-in')) {
+        return sendNotFound(reply, error.message);
+      }
+      if (error.message.includes('not authorized') || error.message.includes('Unauthorized')) {
+        return sendBadRequest(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Initiate secure checkout via QR code with OTP verification
+   * POST /api/attendance/secure-checkout/qr/initiate
+   * Sends OTP to pickup person's phone
+   */
+  static async initiateSecureCheckoutByQR(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const attendanceService = getAttendanceService();
+
+      const {
+        qrCode,
+        centerId,
+        pickupPersonName,
+        pickupPersonRelationship,
+        checkOutTime,
+        checkOutPhotoUrl,
+        notes,
+      } = request.body as any;
+
+      if (!qrCode || !centerId || !pickupPersonName || !pickupPersonRelationship || !checkOutTime) {
+        return sendBadRequest(reply, 'QR code, center ID, pickup person name, relationship, and check-out time are required');
+      }
+
+      // Get staff's classId for validation
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      const staffClassId = isManager ? undefined : tenant.classId;
+
+      const result = await attendanceService.initiateSecureCheckoutByQRCode(
+        tenant.tenantId,
+        centerId,
+        qrCode,
+        {
+          pickupPersonName,
+          pickupPersonRelationship,
+          checkOutTime,
+          checkOutPhotoUrl,
+          notes,
+        },
+        tenant.userId,
+        staffClassId
+      );
+
+      return sendSuccess(reply, {
+        pendingCheckoutId: result.pendingCheckout.id,
+        childName: `${result.child.firstName} ${result.child.lastName}`,
+        pickupPersonName: result.pendingCheckout.pickupPersonName,
+        pickupPersonPhone: result.pendingCheckout.pickupPersonPhone.replace(/(\d{3})\d{4}(\d{3})/, '$1****$2'), // Mask phone number
+        expiresAt: result.pendingCheckout.expiresAt,
+      }, 'Verification code sent to pickup person');
+    } catch (error: any) {
+      if (error.message.includes('Invalid QR code') || error.message.includes('not found') || error.message.includes('No check-in')) {
+        return sendNotFound(reply, error.message);
+      }
+      if (error.message.includes('not authorized') || error.message.includes('Unauthorized')) {
+        return sendBadRequest(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Verify OTP and complete checkout
+   * POST /api/attendance/secure-checkout/verify
+   */
+  static async verifySecureCheckout(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const attendanceService = getAttendanceService();
+
+      const { pendingCheckoutId, otpCode } = request.body as any;
+
+      if (!pendingCheckoutId || !otpCode) {
+        return sendBadRequest(reply, 'Pending checkout ID and OTP code are required');
+      }
+
+      const result = await attendanceService.verifyCheckoutOTP(
+        tenant.tenantId,
+        pendingCheckoutId,
+        otpCode,
+        tenant.userId
+      );
+
+      if (!result.success) {
+        // Check if it's a security concern (max attempts exceeded)
+        if (result.error?.includes('Maximum verification attempts') || result.error?.includes('unauthorized')) {
+          return reply.status(403).send({
+            success: false,
+            message: result.error,
+            securityAlert: true,
+          });
+        }
+        // Include remaining attempts in the response for the frontend
+        return reply.status(400).send({
+          success: false,
+          message: result.error || 'Verification failed',
+          data: {
+            remainingAttempts: result.remainingAttempts,
+          },
+        });
+      }
+
+      return sendSuccess(reply, {
+        attendance: result.attendance,
+        child: result.child ? {
+          id: result.child.id,
+          firstName: result.child.firstName,
+          lastName: result.child.lastName,
+        } : null,
+      }, 'Child checked out successfully');
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Resend OTP for pending checkout
+   * POST /api/attendance/secure-checkout/:pendingCheckoutId/resend
+   */
+  static async resendCheckoutOTP(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const attendanceService = getAttendanceService();
+
+      const { pendingCheckoutId } = request.params as { pendingCheckoutId: string };
+
+      const result = await attendanceService.resendCheckoutOTP(
+        tenant.tenantId,
+        pendingCheckoutId
+      );
+
+      if (!result.success) {
+        return sendBadRequest(reply, result.error || 'Failed to resend verification code');
+      }
+
+      return sendSuccess(reply, { expiresAt: result.expiresAt }, 'Verification code resent successfully');
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Cancel pending checkout
+   * POST /api/attendance/secure-checkout/:pendingCheckoutId/cancel
+   */
+  static async cancelPendingCheckout(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const attendanceService = getAttendanceService();
+
+      const { pendingCheckoutId } = request.params as { pendingCheckoutId: string };
+
+      await attendanceService.cancelPendingCheckout(
+        tenant.tenantId,
+        pendingCheckoutId
+      );
+
+      return sendSuccess(reply, null, 'Checkout cancelled');
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get pending checkout status
+   * GET /api/attendance/secure-checkout/:pendingCheckoutId
+   */
+  static async getPendingCheckout(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const attendanceService = getAttendanceService();
+
+      const { pendingCheckoutId } = request.params as { pendingCheckoutId: string };
+
+      const pendingCheckout = await attendanceService.getPendingCheckout(
+        tenant.tenantId,
+        pendingCheckoutId
+      );
+
+      if (!pendingCheckout) {
+        return sendNotFound(reply, 'Pending checkout not found');
+      }
+
+      return sendSuccess(reply, {
+        id: pendingCheckout.id,
+        status: pendingCheckout.status,
+        childName: pendingCheckout.child ? `${pendingCheckout.child.firstName} ${pendingCheckout.child.lastName}` : null,
+        pickupPersonName: pendingCheckout.pickupPersonName,
+        pickupPersonRelationship: pendingCheckout.pickupPersonRelationship,
+        expiresAt: pendingCheckout.expiresAt,
+        attemptCount: pendingCheckout.attemptCount,
+        maxAttempts: pendingCheckout.maxAttempts,
+      });
     } catch (error: any) {
       return sendServerError(reply, error.message);
     }

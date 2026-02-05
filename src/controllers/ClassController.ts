@@ -22,6 +22,8 @@ export class ClassController {
         capacity,
         room,
         schedule,
+        startTime,
+        endTime,
       } = request.body as any;
 
       if (!centerId || !name || ageGroupMin === undefined || ageGroupMax === undefined || !capacity) {
@@ -35,6 +37,8 @@ export class ClassController {
         capacity: parseInt(capacity),
         room,
         schedule,
+        startTime,
+        endTime,
       });
 
       return sendCreated(reply, { class: classEntity }, 'Class created successfully');

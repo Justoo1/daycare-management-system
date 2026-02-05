@@ -1,7 +1,8 @@
 import { FastifyRequest, FastifyReply } from 'fastify';
 import { getStaffService } from '@services/StaffService';
 import { sendSuccess, sendCreated, sendBadRequest, sendNotFound, sendServerError } from '@utils/response';
-import { TenantContext, StaffPosition, EmploymentType, UserRole } from '@shared';
+import { TenantContext, StaffPosition, EmploymentType, UserRole, StaffPermission } from '@shared';
+import { StaffService } from '@services/StaffService';
 
 export class StaffController {
   /**
@@ -500,6 +501,153 @@ export class StaffController {
 
       return sendSuccess(reply, { statistics });
     } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  // ==================== PERMISSION MANAGEMENT ====================
+
+  /**
+   * Get available permissions list with descriptions
+   * GET /api/staff/permissions/available
+   */
+  static async getAvailablePermissions(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const permissions = StaffService.getAvailablePermissions();
+
+      // Group by category
+      const grouped = permissions.reduce((acc, perm) => {
+        if (!acc[perm.category]) {
+          acc[perm.category] = [];
+        }
+        acc[perm.category].push({
+          permission: perm.permission,
+          description: perm.description,
+        });
+        return acc;
+      }, {} as Record<string, Array<{ permission: StaffPermission; description: string }>>);
+
+      return sendSuccess(reply, { permissions: grouped });
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get default permissions for a role
+   * GET /api/staff/permissions/defaults/:role
+   */
+  static async getDefaultPermissionsForRole(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const { role } = request.params as { role: UserRole };
+
+      // Validate role
+      const validRoles = Object.values(UserRole);
+      if (!validRoles.includes(role)) {
+        return sendBadRequest(reply, `Invalid role. Must be one of: ${validRoles.join(', ')}`);
+      }
+
+      const permissions = StaffService.getDefaultPermissionsForRole(role);
+
+      return sendSuccess(reply, { role, permissions });
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Get staff member's permissions
+   * GET /api/staff/:id/permissions
+   */
+  static async getStaffPermissions(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const staffService = getStaffService();
+      const { id } = request.params as { id: string };
+
+      // Validate that only managers can view staff permissions
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      if (!isManager) {
+        return sendBadRequest(reply, 'Only center owners, directors, and super admins can view staff permissions');
+      }
+
+      const permissions = await staffService.getStaffPermissions(tenant.tenantId, id);
+
+      return sendSuccess(reply, permissions);
+    } catch (error: any) {
+      if (error.message === 'Staff profile not found') {
+        return sendNotFound(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Update staff member's permissions
+   * PUT /api/staff/:id/permissions
+   */
+  static async updateStaffPermissions(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const staffService = getStaffService();
+      const { id } = request.params as { id: string };
+      const { permissions, useCustomPermissions = true } = request.body as {
+        permissions: StaffPermission[];
+        useCustomPermissions?: boolean;
+      };
+
+      // Validate that only managers can update staff permissions
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      if (!isManager) {
+        return sendBadRequest(reply, 'Only center owners, directors, and super admins can update staff permissions');
+      }
+
+      if (!permissions || !Array.isArray(permissions)) {
+        return sendBadRequest(reply, 'permissions must be an array');
+      }
+
+      const staff = await staffService.updateStaffPermissions(
+        tenant.tenantId,
+        id,
+        permissions,
+        useCustomPermissions
+      );
+
+      return sendSuccess(reply, { staff }, 'Staff permissions updated successfully');
+    } catch (error: any) {
+      if (error.message === 'Staff profile not found') {
+        return sendNotFound(reply, error.message);
+      }
+      if (error.message.includes('Invalid permissions')) {
+        return sendBadRequest(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Reset staff member's permissions to default role permissions
+   * POST /api/staff/:id/permissions/reset
+   */
+  static async resetStaffPermissions(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const staffService = getStaffService();
+      const { id } = request.params as { id: string };
+
+      // Validate that only managers can reset staff permissions
+      const isManager = ['super_admin', 'center_owner', 'director'].includes(tenant.role);
+      if (!isManager) {
+        return sendBadRequest(reply, 'Only center owners, directors, and super admins can reset staff permissions');
+      }
+
+      const staff = await staffService.resetStaffPermissions(tenant.tenantId, id);
+
+      return sendSuccess(reply, { staff }, 'Staff permissions reset to default successfully');
+    } catch (error: any) {
+      if (error.message === 'Staff profile not found') {
+        return sendNotFound(reply, error.message);
+      }
       return sendServerError(reply, error.message);
     }
   }

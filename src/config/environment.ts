@@ -66,6 +66,12 @@ export const config = {
     currency: process.env.DEFAULT_CURRENCY || 'GHS',
     phonePrefix: process.env.GHANA_PHONE_PREFIX || '+233',
   },
+
+  imagekit: {
+    publicKey: process.env.IMAGEKIT_PUBLIC_KEY || '',
+    privateKey: process.env.IMAGEKIT_PRIVATE_KEY || '',
+    urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT || '',
+  },
 };
 
 export default config;

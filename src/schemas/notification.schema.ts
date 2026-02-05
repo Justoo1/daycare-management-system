@@ -79,17 +79,10 @@ export const checkBalanceSchema = {
 
 export const uploadPhotoSchema = {
   tags: ['File Uploads'],
-  description: 'Upload a single photo to AWS S3',
+  description: 'Upload a single photo to ImageKit',
   security: [{ bearerAuth: [] }],
   consumes: ['multipart/form-data'],
-  body: {
-    type: 'object',
-    required: ['file'],
-    properties: {
-      file: { type: 'string', format: 'binary', description: 'Photo file' },
-      folder: { type: 'string', description: 'S3 folder path' },
-    },
-  },
+  // Note: body validation is handled by @fastify/multipart, not JSON schema
   response: {
     200: {
       description: 'Photo uploaded successfully',
@@ -100,10 +93,11 @@ export const uploadPhotoSchema = {
         data: {
           type: 'object',
           properties: {
-            url: { type: 'string', description: 'Photo URL' },
-            key: { type: 'string', description: 'S3 key' },
+            fileUrl: { type: 'string', description: 'Photo URL' },
+            fileId: { type: 'string', description: 'ImageKit file ID' },
           },
         },
+        timestamp: { type: 'string' },
       },
     },
   },
