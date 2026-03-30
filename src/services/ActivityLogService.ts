@@ -430,6 +430,7 @@ export class ActivityLogService {
     };
     meals: {
       count: number;
+      totalMeals: number;
       items: Array<{
         type: string;
         time: string;
@@ -485,7 +486,8 @@ export class ActivityLogService {
     };
     photos: {
       count: number;
-      highlights: string[]; // Up to 4 photo URLs for preview
+      totalCount: number;
+      highlights: Array<{ url: string; activityType: string; time: string; description?: string }>; // Up to 4 photos with metadata for preview
     };
     teacherNotes: string[];
     insights: string[];
@@ -565,13 +567,44 @@ export class ActivityLogService {
       ? avgQualityScore >= 3.5 ? 'Excellent' : avgQualityScore >= 2.5 ? 'Good' : avgQualityScore >= 1.5 ? 'Fair' : 'Poor'
       : null;
 
-    // Collect all photos
-    const allPhotos: string[] = [];
+    // Collect all photos with metadata (including attendance photos)
+    const photoHighlights: Array<{ url: string; activityType: string; time: string; description?: string }> = [];
+
+    // Add attendance check-in photo
+    if (attendance?.checkInPhotoUrl) {
+      photoHighlights.push({
+        url: attendance.checkInPhotoUrl,
+        activityType: 'check_in',
+        time: attendance.checkInTime || '',
+        description: 'Check-in photo',
+      });
+    }
+    // Add attendance check-out photo
+    if (attendance?.checkOutPhotoUrl) {
+      photoHighlights.push({
+        url: attendance.checkOutPhotoUrl,
+        activityType: 'check_out',
+        time: attendance.checkOutTime || '',
+        description: 'Check-out photo',
+      });
+    }
+
+    // Add activity photos
     activities.forEach(a => {
       if (a.photoUrls && a.photoUrls.length > 0) {
-        allPhotos.push(...a.photoUrls);
+        a.photoUrls.forEach(url => {
+          photoHighlights.push({
+            url,
+            activityType: a.activityType,
+            time: a.time,
+            description: a.description || undefined,
+          });
+        });
       }
     });
+
+    // Total photo count
+    const totalPhotoCount = photoHighlights.length;
 
     // Collect skills worked on
     const skillsWorkedOn = new Set<string>();
@@ -658,12 +691,13 @@ export class ActivityLogService {
       },
       summary: {
         totalActivities: activities.length,
-        photoCount: allPhotos.length,
+        photoCount: totalPhotoCount,
         dominantMood,
         moodBreakdown,
       },
       meals: {
         count: meals.length,
+        totalMeals: meals.length,
         items: meals.map(m => ({
           type: m.mealType || 'meal',
           time: m.time,
@@ -713,8 +747,9 @@ export class ActivityLogService {
         })),
       },
       photos: {
-        count: allPhotos.length,
-        highlights: allPhotos.slice(0, 4),
+        count: totalPhotoCount,
+        totalCount: totalPhotoCount,
+        highlights: photoHighlights.slice(0, 4),
       },
       teacherNotes: teacherNotes.slice(0, 5), // Limit to 5 most recent notes
       insights,
@@ -731,38 +766,40 @@ export class ActivityLogService {
   ): Promise<{
     weekStart: string;
     weekEnd: string;
-    child: { id: string; firstName: string; lastName: string };
+    childInfo: {
+      id: string;
+      firstName: string;
+      lastName: string;
+      photoUrl?: string;
+      className?: string;
+    };
     attendance: {
       daysPresent: number;
       daysAbsent: number;
       daysLate: number;
       totalDays: number;
-      attendanceRate: number;
-      avgArrivalTime?: string;
-      avgDepartureTime?: string;
+      rate: number;
+      averageHoursPerDay: number;
     };
     meals: {
       totalMeals: number;
       consumptionBreakdown: Record<string, number>;
-      avgMealsPerDay: number;
     };
     sleep: {
       totalMinutes: number;
-      avgMinutesPerDay: number;
-      avgQuality: string | null;
+      totalSessions: number;
+      averageMinutesPerDay: number;
+      averageQuality: number | null;
     };
     activities: {
-      totalActivities: number;
+      total: number;
       byType: Record<string, number>;
-      skillsLearned: string[];
     };
-    mood: {
-      dominantMood: string | null;
-      breakdown: Record<string, number>;
-    };
+    skills: string[];
+    moodBreakdown: Record<string, number>;
     photos: {
-      count: number;
-      highlights: string[];
+      totalCount: number;
+      highlights: Array<{ url: string; date: string; activityType: string }>;
     };
     highlights: string[];
   }> {
@@ -791,22 +828,12 @@ export class ActivityLogService {
       .andWhere('attendance.date <= :endDate', { endDate: endString })
       .getMany();
 
-    const daysPresent = attendanceRecords.filter(a => a.status === 'present').length;
-    const daysAbsent = attendanceRecords.filter(a => a.status === 'absent').length;
-    const daysLate = attendanceRecords.filter(a => a.status === 'late').length;
+    const daysPresent = attendanceRecords.filter(a => a.status?.toLowerCase() === 'present').length;
+    const daysAbsent = attendanceRecords.filter(a => a.status?.toLowerCase() === 'absent').length;
+    const daysLate = attendanceRecords.filter(a => a.status?.toLowerCase() === 'late').length;
     const totalDays = attendanceRecords.length;
-    const attendanceRate = totalDays > 0 ? Math.round((daysPresent + daysLate) / totalDays * 100) : 0;
-
-    // Calculate average arrival/departure times
-    const arrivalTimes = attendanceRecords.filter(a => a.checkInTime).map(a => a.checkInTime!);
-    const departureTimes = attendanceRecords.filter(a => a.checkOutTime).map(a => a.checkOutTime!);
-
-    const avgArrivalTime = arrivalTimes.length > 0
-      ? this.calculateAverageTime(arrivalTimes)
-      : undefined;
-    const avgDepartureTime = departureTimes.length > 0
-      ? this.calculateAverageTime(departureTimes)
-      : undefined;
+    // Attendance rate: present counts as 100%, late counts as 50% (partial attendance)
+    const attendanceRate = totalDays > 0 ? Math.round((daysPresent + (daysLate * 0.5)) / totalDays * 100) : 0;
 
     // Fetch all activities for the week
     const activities = await this.activityLogRepository
@@ -840,9 +867,6 @@ export class ActivityLogService {
     const avgQualityScore = napQualities.length > 0
       ? napQualities.reduce((sum, q) => sum + (qualityScores[q.toLowerCase()] || 2), 0) / napQualities.length
       : null;
-    const avgQuality = avgQualityScore !== null
-      ? avgQualityScore >= 3.5 ? 'Excellent' : avgQualityScore >= 2.5 ? 'Good' : avgQualityScore >= 1.5 ? 'Fair' : 'Poor'
-      : null;
 
     // Activity breakdown by type
     const activityByType: Record<string, number> = {};
@@ -867,71 +891,138 @@ export class ActivityLogService {
       ? Object.entries(moodBreakdown).sort((a, b) => b[1] - a[1])[0][0]
       : null;
 
-    // Photos
-    const allPhotos: string[] = [];
-    activities.forEach(a => {
-      if (a.photoUrls && a.photoUrls.length > 0) {
-        allPhotos.push(...a.photoUrls);
+    // Photos - include both activity photos and attendance photos with metadata
+    const allPhotosWithMeta: Array<{ url: string; activityType: string; date: string }> = [];
+
+    // Add attendance check-in/check-out photos with proper labels
+    attendanceRecords.forEach(a => {
+      const dateStr = a.date ? new Date(a.date).toISOString().split('T')[0] : startString;
+      if (a.checkInPhotoUrl) {
+        allPhotosWithMeta.push({
+          url: a.checkInPhotoUrl,
+          activityType: 'Check-in',
+          date: dateStr,
+        });
+      }
+      if (a.checkOutPhotoUrl) {
+        allPhotosWithMeta.push({
+          url: a.checkOutPhotoUrl,
+          activityType: 'Check-out',
+          date: dateStr,
+        });
       }
     });
 
-    // Generate highlights
+    // Add activity photos with their activity type
+    activities.forEach(a => {
+      if (a.photoUrls && a.photoUrls.length > 0) {
+        const dateStr = a.date ? new Date(a.date).toISOString().split('T')[0] : startString;
+        const activityLabel = a.activityType
+          ? a.activityType.charAt(0).toUpperCase() + a.activityType.slice(1).replace('_', ' ')
+          : 'Activity';
+        a.photoUrls.forEach(url => {
+          allPhotosWithMeta.push({
+            url,
+            activityType: activityLabel,
+            date: dateStr,
+          });
+        });
+      }
+    });
+
+    // Generate highlights based on actual data
     const highlights: string[] = [];
-    if (attendanceRate >= 90) {
+
+    // Attendance highlight - only if rate is actually good
+    if (totalDays > 0 && attendanceRate >= 80) {
       highlights.push('Great attendance this week!');
+    } else if (totalDays > 0 && attendanceRate >= 50) {
+      highlights.push('Maintained regular attendance this week');
     }
-    if (consumptionBreakdown.all >= meals.length * 0.7) {
+
+    // Meal highlight - only if there are meals and consumption is good
+    if (meals.length > 0 && consumptionBreakdown.all >= meals.length * 0.5) {
       highlights.push('Ate well throughout the week');
+    } else if (meals.length > 0) {
+      highlights.push(`Had ${meals.length} meal${meals.length > 1 ? 's' : ''} recorded this week`);
     }
+
+    // Skills highlight
     if (skillsLearned.size > 0) {
       highlights.push(`Practiced ${skillsLearned.size} different skills`);
     }
-    if (allPhotos.length > 0) {
-      highlights.push(`${allPhotos.length} photos captured this week`);
+
+    // Photos highlight
+    if (allPhotosWithMeta.length > 0) {
+      highlights.push(`${allPhotosWithMeta.length} photo${allPhotosWithMeta.length > 1 ? 's' : ''} captured this week`);
     }
+
+    // Mood highlight
     if (dominantMood === 'happy' || dominantMood === 'playful') {
       highlights.push('Was in great spirits most of the week');
     }
 
+    // If no highlights, add a generic one
+    if (highlights.length === 0 && totalDays > 0) {
+      highlights.push(`${totalDays} day${totalDays > 1 ? 's' : ''} of activity recorded`);
+    }
+
+    // Calculate average hours per day from attendance records
+    let totalHours = 0;
+    let daysWithHours = 0;
+    attendanceRecords.forEach(a => {
+      if (a.checkInTime && a.checkOutTime) {
+        const checkIn = new Date(`2000-01-01T${a.checkInTime}`);
+        const checkOut = new Date(`2000-01-01T${a.checkOutTime}`);
+        const hours = (checkOut.getTime() - checkIn.getTime()) / (1000 * 60 * 60);
+        if (hours > 0) {
+          totalHours += hours;
+          daysWithHours++;
+        }
+      }
+    });
+    const averageHoursPerDay = daysWithHours > 0 ? Math.round(totalHours / daysWithHours * 10) / 10 : 0;
+
+    // Use photos with metadata directly (already formatted)
+    const photoHighlights = allPhotosWithMeta.slice(0, 6);
+
     return {
       weekStart: startString,
       weekEnd: endString,
-      child: {
+      childInfo: {
         id: child.id,
         firstName: child.firstName,
         lastName: child.lastName,
+        photoUrl: child.photoUrl,
+        className: child.class?.name,
       },
       attendance: {
         daysPresent,
         daysAbsent,
         daysLate,
         totalDays,
-        attendanceRate,
-        avgArrivalTime,
-        avgDepartureTime,
+        rate: attendanceRate,
+        averageHoursPerDay,
       },
       meals: {
         totalMeals: meals.length,
         consumptionBreakdown,
-        avgMealsPerDay: totalDays > 0 ? Math.round(meals.length / totalDays * 10) / 10 : 0,
       },
       sleep: {
         totalMinutes: totalSleepMinutes,
-        avgMinutesPerDay: avgSleepMinutes,
-        avgQuality,
+        totalSessions: naps.length,
+        averageMinutesPerDay: avgSleepMinutes,
+        averageQuality: avgQualityScore,
       },
       activities: {
-        totalActivities: activities.length,
+        total: activities.filter(a => a.activityType !== 'meal' && a.activityType !== 'nap').length,
         byType: activityByType,
-        skillsLearned: Array.from(skillsLearned),
       },
-      mood: {
-        dominantMood,
-        breakdown: moodBreakdown,
-      },
+      skills: Array.from(skillsLearned),
+      moodBreakdown,
       photos: {
-        count: allPhotos.length,
-        highlights: allPhotos.slice(0, 6),
+        totalCount: allPhotosWithMeta.length,
+        highlights: photoHighlights,
       },
       highlights,
     };

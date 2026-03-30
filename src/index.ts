@@ -27,6 +27,7 @@ import { ShiftController } from './controllers/ShiftController';
 import { StaffAttendanceController } from './controllers/StaffAttendanceController';
 import { AnalyticsController } from './controllers/AnalyticsController';
 import { ReportController } from './controllers/ReportController';
+import { IncidentController } from './controllers/IncidentController';
 import { GuardianController } from './controllers/GuardianController';
 import { invoiceController } from './controllers/invoice.controller';
 import { paymentController } from './controllers/payment.controller';
@@ -265,6 +266,13 @@ async function registerRoutes() {
   // Passwordless login routes (public - no authentication required)
   fastify.post('/api/auth/login/otp/send', { schema: authSchemas.sendLoginOTPSchema }, AuthController.sendLoginOTP);
   fastify.post('/api/auth/login/otp/verify', { schema: authSchemas.loginWithOTPSchema }, AuthController.loginWithOTP);
+
+  // Password reset routes (public - no authentication required)
+  fastify.post('/api/auth/forgot-password', AuthController.forgotPassword);
+  fastify.post('/api/auth/reset-password', AuthController.resetPassword);
+
+  // Push notification token (protected)
+  fastify.post('/api/auth/push-token', { onRequest: [authenticateRoute] }, AuthController.savePushToken);
 
   // Protected auth routes (require JWT authentication)
   fastify.post('/api/auth/send-otp', { onRequest: [authenticateRoute], schema: authSchemas.sendOTPSchema }, AuthController.sendOTP);
@@ -548,6 +556,11 @@ async function registerRoutes() {
   fastify.get('/api/reports/statistics', { onRequest: [authenticateRoute], schema: reportSchemas.getReportStatisticsSchema }, ReportController.getReportStatistics);
   fastify.get('/api/reports/:id', { onRequest: [authenticateRoute], schema: reportSchemas.getReportByIdSchema }, ReportController.getReportById);
   fastify.delete('/api/reports/:id', { onRequest: [authenticateRoute], schema: reportSchemas.deleteReportSchema }, ReportController.deleteReport);
+
+  // Incident Report routes (protected - require authentication)
+  fastify.post('/api/incidents', { onRequest: [authenticateRoute] }, IncidentController.createIncident);
+  fastify.get('/api/incidents', { onRequest: [authenticateRoute] }, IncidentController.listIncidents);
+  fastify.get('/api/incidents/:id', { onRequest: [authenticateRoute] }, IncidentController.getIncident);
 
   // Invoice Management routes (protected - require tenant header)
   // Manager-only routes for creating and managing invoices

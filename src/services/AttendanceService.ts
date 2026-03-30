@@ -6,6 +6,7 @@ import { PendingCheckout, CheckoutOTPStatus } from '@models/PendingCheckout';
 import { AttendanceStatus } from '@shared';
 import { Repository, IsNull, Between } from 'typeorm';
 import { getNotificationService } from './NotificationService';
+import { getPushNotificationService } from './PushNotificationService';
 
 export class AttendanceService {
   private attendanceRepository: Repository<Attendance>;
@@ -140,7 +141,45 @@ export class AttendanceService {
       attendance.status = AttendanceStatus.LATE;
     }
 
-    return this.attendanceRepository.save(attendance);
+    const savedAttendance = await this.attendanceRepository.save(attendance);
+
+    // Send check-in SMS to all guardians (fire-and-forget)
+    this.sendCheckInSMSToGuardians(tenantId, childId, data.checkInTime).catch((err) =>
+      console.error('[AttendanceService] Failed to send check-in SMS:', err)
+    );
+
+    return savedAttendance;
+  }
+
+  private async sendCheckInSMSToGuardians(tenantId: string, childId: string, checkInTime: string): Promise<void> {
+    const child = await this.childRepository.findOne({
+      where: { id: childId, tenantId },
+      relations: ['guardians'],
+    });
+    if (!child) return;
+
+    const childName = `${child.firstName} ${child.lastName}`;
+    const notificationService = getNotificationService();
+    const pushService = getPushNotificationService();
+
+    const guardianUserIds: string[] = [];
+    for (const guardian of child.guardians ?? []) {
+      if (guardian.phoneNumber) {
+        await notificationService.sendCheckInNotification(guardian.phoneNumber, childName, checkInTime).catch(() => {});
+      }
+      if (guardian.userId && guardian.canReceivePushNotifications) {
+        guardianUserIds.push(guardian.userId);
+      }
+    }
+
+    if (guardianUserIds.length) {
+      await pushService.sendToUserIds(
+        guardianUserIds,
+        'Child Checked In',
+        `${childName} has been checked in at ${checkInTime}.`,
+        { type: 'check_in', childId }
+      ).catch(() => {});
+    }
   }
 
   /**
@@ -233,7 +272,45 @@ export class AttendanceService {
       attendance.status = AttendanceStatus.EARLY_PICKUP;
     }
 
-    return this.attendanceRepository.save(attendance);
+    const savedAttendance = await this.attendanceRepository.save(attendance);
+
+    // Send check-out SMS to all guardians (fire-and-forget)
+    this.sendCheckOutSMSToGuardians(tenantId, childId, data.checkOutTime).catch((err) =>
+      console.error('[AttendanceService] Failed to send check-out SMS:', err)
+    );
+
+    return savedAttendance;
+  }
+
+  private async sendCheckOutSMSToGuardians(tenantId: string, childId: string, checkOutTime: string): Promise<void> {
+    const child = await this.childRepository.findOne({
+      where: { id: childId, tenantId },
+      relations: ['guardians'],
+    });
+    if (!child) return;
+
+    const childName = `${child.firstName} ${child.lastName}`;
+    const notificationService = getNotificationService();
+    const pushService = getPushNotificationService();
+
+    const guardianUserIds: string[] = [];
+    for (const guardian of child.guardians ?? []) {
+      if (guardian.phoneNumber) {
+        await notificationService.sendCheckOutNotification(guardian.phoneNumber, childName, checkOutTime).catch(() => {});
+      }
+      if (guardian.userId && guardian.canReceivePushNotifications) {
+        guardianUserIds.push(guardian.userId);
+      }
+    }
+
+    if (guardianUserIds.length) {
+      await pushService.sendToUserIds(
+        guardianUserIds,
+        'Child Checked Out',
+        `${childName} has been checked out at ${checkOutTime}.`,
+        { type: 'check_out', childId }
+      ).catch(() => {});
+    }
   }
 
   /**

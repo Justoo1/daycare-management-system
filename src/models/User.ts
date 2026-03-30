@@ -70,6 +70,17 @@ export class User {
   @Column('int', { default: 0 })
   otpAttempts: number;
 
+  // OTP for password reset
+  @Column('varchar', { length: 6, nullable: true })
+  passwordResetOtp: string | null;
+
+  @Column('timestamp', { nullable: true })
+  passwordResetExpiry: Date | null;
+
+  // Expo push notification token
+  @Column('text', { nullable: true })
+  pushToken: string | null;
+
   // Profile information
   @Column('text', { nullable: true })
   profilePhotoUrl: string;

@@ -241,6 +241,77 @@ export class AuthController {
   }
 
   /**
+   * Save Expo push notification token for the authenticated user
+   * POST /api/auth/push-token
+   */
+  static async savePushToken(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const tenant = (request as any).tenant as TenantContext;
+      const authService = getAuthService();
+      const { pushToken } = request.body as any;
+
+      if (!pushToken) {
+        return sendBadRequest(reply, 'pushToken is required');
+      }
+
+      await authService.savePushToken(tenant.userId, pushToken);
+      return sendSuccess(reply, {}, 'Push token saved');
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Initiate password reset via SMS OTP (Public endpoint)
+   * POST /api/auth/forgot-password
+   */
+  static async forgotPassword(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const authService = getAuthService();
+      const { phoneNumber } = request.body as any;
+
+      if (!phoneNumber) {
+        return sendBadRequest(reply, 'Phone number is required');
+      }
+
+      await authService.forgotPassword(phoneNumber);
+
+      // Always return success to avoid revealing whether a phone number is registered
+      return sendSuccess(reply, {}, 'If that number is registered, a reset code has been sent.');
+    } catch (error: any) {
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
+   * Complete password reset with OTP (Public endpoint)
+   * POST /api/auth/reset-password
+   */
+  static async resetPassword(request: FastifyRequest, reply: FastifyReply) {
+    try {
+      const authService = getAuthService();
+      const { phoneNumber, otp, newPassword } = request.body as any;
+
+      if (!phoneNumber || !otp || !newPassword) {
+        return sendBadRequest(reply, 'Phone number, OTP, and new password are required');
+      }
+
+      if (newPassword.length < 8) {
+        return sendBadRequest(reply, 'Password must be at least 8 characters long');
+      }
+
+      await authService.resetPassword(phoneNumber, otp, newPassword);
+
+      return sendSuccess(reply, {}, 'Password reset successfully. You can now log in.');
+    } catch (error: any) {
+      if (error.message.includes('Invalid') || error.message.includes('expired')) {
+        return sendBadRequest(reply, error.message);
+      }
+      return sendServerError(reply, error.message);
+    }
+  }
+
+  /**
    * Change password
    * POST /api/auth/change-password
    */

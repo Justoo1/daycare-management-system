@@ -546,6 +546,98 @@ export class AuthService {
     user.passwordHash = newPassword;
     await this.userRepository.save(user);
   }
+
+  /**
+   * Save Expo push token for a user
+   */
+  async savePushToken(userId: string, pushToken: string): Promise<void> {
+    await this.userRepository.update({ id: userId }, { pushToken });
+  }
+
+  /**
+   * Initiate password reset — sends OTP to the user's phone number
+   */
+  async forgotPassword(phoneNumber: string): Promise<void> {
+    let normalizedPhone: string;
+    try {
+      normalizedPhone = normalizeGhanaPhoneNumber(phoneNumber);
+    } catch {
+      normalizedPhone = phoneNumber;
+    }
+
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .where('user.isActive = :isActive', { isActive: true })
+      .andWhere(
+        '(user.phoneNumber = :original OR user.phoneNumber = :normalized)',
+        { original: phoneNumber, normalized: normalizedPhone }
+      )
+      .getOne();
+
+    if (!user) {
+      // Don't reveal whether phone exists — silently succeed
+      return;
+    }
+
+    const otp = generateOTP();
+    const expiry = new Date();
+    expiry.setMinutes(expiry.getMinutes() + 10);
+
+    user.passwordResetOtp = otp;
+    user.passwordResetExpiry = expiry;
+    await this.userRepository.save(user);
+
+    try {
+      const { getNotificationService } = await import('./NotificationService');
+      const notificationService = getNotificationService();
+      const message = `Your Nkabom password reset code is: ${otp}. Valid for 10 minutes. Do not share this code.`;
+      await notificationService.sendSMS({ recipient: user.phoneNumber, message });
+    } catch (error: any) {
+      console.error('Failed to send password reset OTP:', error.message);
+      console.log(`⚠️  Password reset OTP for ${phoneNumber}: ${otp} (SMS failed)`);
+    }
+  }
+
+  /**
+   * Complete password reset — verifies OTP and sets new password
+   */
+  async resetPassword(phoneNumber: string, otp: string, newPassword: string): Promise<void> {
+    let normalizedPhone: string;
+    try {
+      normalizedPhone = normalizeGhanaPhoneNumber(phoneNumber);
+    } catch {
+      normalizedPhone = phoneNumber;
+    }
+
+    const user = await this.userRepository
+      .createQueryBuilder('user')
+      .where('user.isActive = :isActive', { isActive: true })
+      .andWhere(
+        '(user.phoneNumber = :original OR user.phoneNumber = :normalized)',
+        { original: phoneNumber, normalized: normalizedPhone }
+      )
+      .getOne();
+
+    if (!user || !user.passwordResetOtp || !user.passwordResetExpiry) {
+      throw new Error('Invalid or expired reset code');
+    }
+
+    if (new Date() > user.passwordResetExpiry) {
+      user.passwordResetOtp = null;
+      user.passwordResetExpiry = null;
+      await this.userRepository.save(user);
+      throw new Error('Reset code has expired. Please request a new one.');
+    }
+
+    if (user.passwordResetOtp !== otp) {
+      throw new Error('Invalid reset code');
+    }
+
+    user.passwordHash = newPassword;
+    user.passwordResetOtp = null;
+    user.passwordResetExpiry = null;
+    await this.userRepository.save(user);
+  }
 }
 
 // Export singleton
